@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         X Profile Keyword Blocker
-// @namespace    https://github.com/YOUR-GITHUB-USER/x-profile-keyword-blocker
+// @namespace    https://github.com/gregzuro/x-hider
 // @version      1.4.0
 // @description  Hide posts on x.com from accounts whose profile matches your keywords - bio, display name, location, link or emoji.
-// @author       YOUR NAME HERE
+// @author       Greg Zuro
 // @license      MIT
+// @homepageURL  https://github.com/gregzuro/x-hider
+// @supportURL   https://github.com/gregzuro/x-hider/issues
+// @downloadURL  https://raw.githubusercontent.com/gregzuro/x-hider/main/x-profile-keyword-blocker.user.js
+// @updateURL    https://raw.githubusercontent.com/gregzuro/x-hider/main/x-profile-keyword-blocker.user.js
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @match        https://mobile.x.com/*

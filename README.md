@@ -22,7 +22,8 @@ Display names are additionally read straight off the page, since those are rende
 
 1. Install [Violentmonkey](https://violentmonkey.github.io/) or
    [Tampermonkey](https://www.tampermonkey.net/).
-2. Open `x-profile-keyword-blocker.user.js` and install it.
+2. [Install the script](https://raw.githubusercontent.com/gregzuro/x-hider/main/x-profile-keyword-blocker.user.js).
+   Your userscript manager will intercept that link and offer to install it.
 3. Reload x.com. A hard reload matters: the hook has to be in place before the first
    timeline request.
 
@@ -132,4 +133,4 @@ out of the userscript, so they run without a browser.
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
