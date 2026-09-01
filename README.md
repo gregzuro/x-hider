@@ -142,10 +142,30 @@ Accounts whose profile is unknown are never hidden. That is deliberate: a stub r
 must not silently whitelist an account, so a profile with no usable text counts as
 unknown rather than clean.
 
+## Updating
+
+**Update in place. Do not remove and reinstall.** An in-place update keeps the script's
+stored settings; a remove-and-reinstall throws them away, because your manager deletes a
+script's values along with the script. Any of these are in place:
+
+- **Let it update itself.** `@updateURL` points at the raw file on `main`, so once
+  `@version` goes up your manager picks it up on its own schedule. To not wait, open the
+  Violentmonkey dashboard and use the update action on the script (or "Check for updates
+  for all scripts").
+- **Reinstall over the top from the same URL.** Because `@name` and `@namespace` match,
+  your manager recognises it as the same script and offers to update rather than adding a
+  second one. Settings are kept.
+- **Paste over it in the editor.** Open the script in the Violentmonkey editor, select
+  all, paste the new source, save. Same script record, same settings. This is the
+  quickest loop when the source is a local file.
+
+If your manager offers to track a local file, that is the tidiest development loop of
+all, but availability varies by browser and version, so check yours.
+
 ## Settings, and keeping them
 
-Settings survive an update on their own: your manager updates the script in place and
-leaves its stored values alone. Two things do lose them, and both are handled.
+Settings survive an in-place update on their own: your manager leaves a script's stored
+values alone. Two things do lose them, and both are handled.
 
 The first is a **schema change**. A config written by an older version is loaded by
 starting from the current defaults and overlaying only the keys that are recognised, at
@@ -156,9 +176,14 @@ The second is **GM storage being orphaned**. It is keyed on the script's `@name`
 `@namespace`, so changing either of those, or removing and reinstalling rather than
 updating, leaves the old values stranded under a key nothing reads. Against that the
 script keeps a second copy in x.com's own `localStorage`, which knows nothing about
-userscripts and survives all of it. That copy is only read when GM storage comes back
-empty, and it is written straight back to GM storage when it is, so the recovery happens
-once and the console says so.
+userscripts and survives all of it. It is refreshed on every page load, not just when you
+press Save, since the copy has to already exist before the reinstall that orphans the
+original. It is read only when GM storage comes back empty, and is written straight back
+to GM storage when it is, so the recovery happens once and the console says so.
+
+This only protects you from the version that introduced it onwards. If you are about to
+reinstall and are not sure a mirror exists yet, open the settings panel first and copy the
+Backup line out.
 
 For anything those do not cover - a new browser, a new machine, or just wanting a copy
 somewhere safe - the settings panel has a **Backup** box holding your whole config as one
@@ -180,7 +205,7 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-63 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+65 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
 sequences, field scoping, display-name matching, the three JS worlds, and settings
 persistence. The tests pull the pure sections out of the userscript, so they run without
 a browser. The world cases build a stand-in for each of `page`, `xray` and `isolated` and

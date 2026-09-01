@@ -230,6 +230,14 @@ console.log('\n--- settings persistence ---');
   check('GM storage wins when present', env.loadConfig().keywords.join(), 'fromGM');
 }
 {
+  // The mirror has to exist BEFORE the reinstall that orphans GM storage, so a
+  // plain load refreshes it even if the settings panel is never opened.
+  const { env, ls } = buildConfig({ keywords: ['neverOpenedSettings'], v: 1 });
+  check('mirror absent before first load', 'xpkb:config' in ls, false);
+  env.loadConfig();
+  check('load seeds the mirror', JSON.parse(ls['xpkb:config']).keywords.join(), 'neverOpenedSettings');
+}
+{
   // GM storage orphaned by a reinstall; only the x.com-side copy is left.
   const { env, gm } = buildConfig(undefined, { keywords: ['fromMirror'], action: 'hide', v: 1 });
   const restored = env.loadConfig();

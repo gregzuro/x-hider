@@ -196,12 +196,24 @@
     } catch (e) { return null; }
   }
 
+  function writeMirror(value) {
+    try { localStorage.setItem(CONFIG_MIRROR, JSON.stringify(value)); } catch (e) { /* ignore */ }
+  }
+
   function loadConfig() {
     var primary = null;
     try {
       if (typeof GM_getValue === 'function') primary = GM_getValue(CONFIG_KEY, null);
     } catch (e) { /* ignore */ }
-    if (primary && typeof primary === 'object') return normalizeConfig(primary);
+
+    if (primary && typeof primary === 'object') {
+      var current = normalizeConfig(primary);
+      // Refresh the mirror on every load, not just on save. Someone who never
+      // reopens the settings panel still needs a copy sitting outside GM
+      // storage before the reinstall that orphans it, not after.
+      writeMirror(current);
+      return current;
+    }
 
     var mirror = readMirror();
     if (mirror && typeof mirror === 'object') {
@@ -217,7 +229,7 @@
   function saveConfig() {
     cfg.v = SCHEMA;
     store.set(CONFIG_KEY, cfg);
-    try { localStorage.setItem(CONFIG_MIRROR, JSON.stringify(cfg)); } catch (e) { /* ignore */ }
+    writeMirror(cfg);
   }
 
   function normalizeConfig(raw) {
