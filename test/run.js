@@ -173,5 +173,82 @@ console.log('\n--- JS world fallback ---');
   check('isolated: nothing recorded', iso.store.size, 0);
 }
 
+/* ---- settings persistence across updates ---- */
+/*
+ * normalizeConfig() is the forward-compatibility layer: a config written by an
+ * older version has to load with new keys defaulted and stale ones dropped.
+ * loadConfig() is the recovery path for GM storage being orphaned by a
+ * reinstall or an identity change, which is the case that would otherwise
+ * silently revert someone to an empty keyword list.
+ */
+const cfgBody = slice('  var DEFAULTS = {', '    return out;\n  }');
+
+function buildConfig(gmValue, mirrorValue, live) {
+  const gm = gmValue === undefined ? {} : { config: gmValue };
+  const ls = mirrorValue === undefined ? {} : { 'xpkb:config': JSON.stringify(mirrorValue) };
+  const fakeLocal = {
+    getItem: k => (k in ls ? ls[k] : null),
+    setItem: (k, v) => { ls[k] = v; }
+  };
+  const env = new Function(
+    'GM_getValue', 'GM_setValue', 'localStorage', 'store', 'console', 'cfg',
+    cfgBody + '; return { normalizeConfig, loadConfig, saveConfig, DEFAULTS };'
+  )(
+    (k, d) => (gm[k] === undefined ? d : gm[k]),
+    (k, v) => { gm[k] = v; },
+    fakeLocal,
+    { set: (k, v) => { gm[k] = v; } },
+    { info: () => {} },
+    live || null
+  );
+  return { env, gm, ls };
+}
+
+console.log('\n--- settings persistence ---');
+{
+  const { env } = buildConfig();
+  const fresh = env.normalizeConfig(null);
+  check('fresh config uses defaults', fresh.fields.bio, true);
+
+  // A 1.4.0 config: no schema version, and written before normalizeEmoji existed.
+  const old14 = { keywords: ['Christian'], action: 'hide', fields: { name: true } };
+  const up = env.normalizeConfig(old14);
+  check('old config keeps its keywords', up.keywords.join(), 'Christian');
+  check('old config keeps its action', up.action, 'hide');
+  check('old config keeps a set field', up.fields.name, true);
+  check('unset field falls back to default', up.fields.bio, true);
+  check('key added later gets its default', up.normalizeEmoji, true);
+  check('unversioned config reads as v0', up.v, 0);
+  check('unknown keys are dropped', 'bogus' in env.normalizeConfig({ bogus: 1 }), false);
+  check('wrong type is ignored', env.normalizeConfig({ caseSensitive: 'yes' }).caseSensitive, false);
+  check('round trip is stable',
+    JSON.stringify(env.normalizeConfig(JSON.parse(JSON.stringify(up)))), JSON.stringify(up));
+}
+{
+  // GM storage intact: the mirror is not consulted.
+  const { env } = buildConfig({ keywords: ['fromGM'], v: 1 }, { keywords: ['fromMirror'], v: 1 });
+  check('GM storage wins when present', env.loadConfig().keywords.join(), 'fromGM');
+}
+{
+  // GM storage orphaned by a reinstall; only the x.com-side copy is left.
+  const { env, gm } = buildConfig(undefined, { keywords: ['fromMirror'], action: 'hide', v: 1 });
+  const restored = env.loadConfig();
+  check('mirror recovers orphaned settings', restored.keywords.join(), 'fromMirror');
+  check('mirror recovery keeps other values', restored.action, 'hide');
+  check('recovered config is written back to GM', gm.config.keywords.join(), 'fromMirror');
+}
+{
+  const { env } = buildConfig();
+  check('no copy anywhere gives defaults', env.loadConfig().keywords.length, 0);
+}
+{
+  const live = { keywords: ['x'], fields: {} };
+  const { env, gm, ls } = buildConfig(undefined, undefined, live);
+  env.saveConfig();
+  check('save writes GM storage', gm.config.keywords.join(), 'x');
+  check('save writes the mirror', JSON.parse(ls['xpkb:config']).keywords.join(), 'x');
+  check('save stamps the schema version', gm.config.v, 1);
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall cases pass');
 process.exit(failures ? 1 : 0);

@@ -142,6 +142,28 @@ Accounts whose profile is unknown are never hidden. That is deliberate: a stub r
 must not silently whitelist an account, so a profile with no usable text counts as
 unknown rather than clean.
 
+## Settings, and keeping them
+
+Settings survive an update on their own: your manager updates the script in place and
+leaves its stored values alone. Two things do lose them, and both are handled.
+
+The first is a **schema change**. A config written by an older version is loaded by
+starting from the current defaults and overlaying only the keys that are recognised, at
+the type expected, so a key added in a later version gets its default and a stale one is
+dropped. Your keywords come through untouched.
+
+The second is **GM storage being orphaned**. It is keyed on the script's `@name` and
+`@namespace`, so changing either of those, or removing and reinstalling rather than
+updating, leaves the old values stranded under a key nothing reads. Against that the
+script keeps a second copy in x.com's own `localStorage`, which knows nothing about
+userscripts and survives all of it. That copy is only read when GM storage comes back
+empty, and it is written straight back to GM storage when it is, so the recovery happens
+once and the console says so.
+
+For anything those do not cover - a new browser, a new machine, or just wanting a copy
+somewhere safe - the settings panel has a **Backup** box holding your whole config as one
+line of JSON. Copy it out to save it; paste one in and press Restore to load it.
+
 ## Privacy
 
 Profiles are cached locally through GM storage (2500 entries, oldest dropped) so
@@ -158,11 +180,12 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-45 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
-sequences, field scoping, display-name matching, and the three JS worlds. The tests pull
-the pure sections out of the userscript, so they run without a browser. The world cases
-build a stand-in for each of `page`, `xray` and `isolated` and check that a user object
-buried in React props is found through the right access path in each.
+63 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+sequences, field scoping, display-name matching, the three JS worlds, and settings
+persistence. The tests pull the pure sections out of the userscript, so they run without
+a browser. The world cases build a stand-in for each of `page`, `xray` and `isolated` and
+check that a user object buried in React props is found through the right access path in
+each; the persistence cases load a 1.4.0-shaped config and recover an orphaned one.
 
 ## License
 

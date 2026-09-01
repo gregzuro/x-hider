@@ -154,6 +154,7 @@
       links: false,
       professional: false
     },
+    v: 1,                          // schema version, for future migrations
     action: 'collapse',            // collapse | hide
     checkRetweeter: true,
     checkQuoted: false,
@@ -163,7 +164,61 @@
     debug: false
   };
 
-  var cfg = normalizeConfig(store.get('config', null));
+  /* ------------------------------------------------------------------ *
+   * settings persistence
+   *
+   * Two independent copies, because they fail in different ways.
+   *
+   * GM storage is the primary. It survives an in-place update, but it is keyed
+   * on the script's identity - @name and @namespace - so changing either of
+   * those, or removing and reinstalling the script, orphans everything under
+   * the old key. NEVER change @name or @namespace.
+   *
+   * The mirror is x.com's own localStorage, which knows nothing about the
+   * script and so survives all of that. It is only read when GM storage comes
+   * back empty, which means either a genuinely fresh install or an orphaning.
+   * Either way the mirror is the better answer than silently reverting to
+   * defaults and quietly stopping filtering.
+   *
+   * normalizeConfig() is what makes a config from an older version safe to
+   * load: it starts from DEFAULTS and overlays only the keys it recognises, at
+   * the type it expects, so keys added in a later version get their default and
+   * anything stale is dropped.
+   * ------------------------------------------------------------------ */
+  var CONFIG_KEY = 'config';
+  var CONFIG_MIRROR = 'xpkb:config';
+  var SCHEMA = 1;
+
+  function readMirror() {
+    try {
+      var raw = localStorage.getItem(CONFIG_MIRROR);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  function loadConfig() {
+    var primary = null;
+    try {
+      if (typeof GM_getValue === 'function') primary = GM_getValue(CONFIG_KEY, null);
+    } catch (e) { /* ignore */ }
+    if (primary && typeof primary === 'object') return normalizeConfig(primary);
+
+    var mirror = readMirror();
+    if (mirror && typeof mirror === 'object') {
+      var recovered = normalizeConfig(mirror);
+      // Put it back where it belongs so the next load is a plain read.
+      try { if (typeof GM_setValue === 'function') GM_setValue(CONFIG_KEY, recovered); } catch (e) { /* ignore */ }
+      console.info('[xpkb] settings restored from the x.com-side backup copy');
+      return recovered;
+    }
+    return normalizeConfig(null);
+  }
+
+  function saveConfig() {
+    cfg.v = SCHEMA;
+    store.set(CONFIG_KEY, cfg);
+    try { localStorage.setItem(CONFIG_MIRROR, JSON.stringify(cfg)); } catch (e) { /* ignore */ }
+  }
 
   function normalizeConfig(raw) {
     var out = JSON.parse(JSON.stringify(DEFAULTS));
@@ -174,6 +229,8 @@
       'normalizeEmoji', 'debug']
       .forEach(function (k) { if (typeof raw[k] === 'boolean') out[k] = raw[k]; });
     if (raw.action === 'hide' || raw.action === 'collapse') out.action = raw.action;
+    // 0 means "written before the schema was versioned", which is still valid.
+    out.v = typeof raw.v === 'number' ? raw.v : 0;
     if (raw.fields && typeof raw.fields === 'object') {
       Object.keys(out.fields).forEach(function (k) {
         if (typeof raw.fields[k] === 'boolean') out.fields[k] = raw.fields[k];
@@ -181,6 +238,8 @@
     }
     return out;
   }
+
+  var cfg = loadConfig();
 
   function log() {
     if (!cfg.debug) return;
@@ -1009,7 +1068,11 @@
     '.xpkb-actions button{cursor:pointer;border-radius:999px;border:1px solid #536471;background:transparent;',
     'color:#e7e9ea;padding:8px 16px;font-weight:600;font-size:13px}',
     '.xpkb-actions button.primary{background:#1d9bf0;border-color:#1d9bf0;color:#fff}',
-    '.xpkb-stats{color:#8b98a5;font-size:12px}'
+    '.xpkb-stats{color:#8b98a5;font-size:12px}',
+    '.xpkb-panel textarea.xpkb-backup{min-height:0;height:52px;font-size:11px;color:#8b98a5}',
+    '.xpkb-note{margin:5px 0 0;color:#8b98a5;font-size:12px}',
+    '.xpkb-note.bad{color:#f4212e}',
+    '.xpkb-inline{all:unset;cursor:pointer;color:#1d9bf0;font-weight:600}'
   ].join(''));
 
   function cellOf(node) {
@@ -1355,6 +1418,43 @@
     [rt, qt, uc, lu, ne, dbg].forEach(function (c) { scopeRow.appendChild(c.wrap); });
     panel.appendChild(scopeRow);
 
+    var backupLabel = document.createElement('label');
+    backupLabel.textContent = 'Backup';
+    panel.appendChild(backupLabel);
+    var backup = document.createElement('textarea');
+    backup.className = 'xpkb-backup';
+    backup.spellcheck = false;
+    backup.value = JSON.stringify(cfg);
+    panel.appendChild(backup);
+    var backupNote = document.createElement('p');
+    backupNote.className = 'xpkb-note';
+    var importBtn = document.createElement('button');
+    importBtn.type = 'button';
+    importBtn.className = 'xpkb-inline';
+    importBtn.textContent = 'Restore';
+    backupNote.appendChild(document.createTextNode(
+      'Copy this out to move your settings to another browser or keep them somewhere safe. ' +
+      'Paste one back in and press '));
+    backupNote.appendChild(importBtn);
+    backupNote.appendChild(document.createTextNode('.'));
+    panel.appendChild(backupNote);
+
+    importBtn.addEventListener('click', function () {
+      var parsed;
+      try { parsed = JSON.parse(backup.value); } catch (e) { parsed = null; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        backupNote.className = 'xpkb-note bad';
+        backupNote.textContent = 'That is not a settings backup. Paste the whole line, braces and all.';
+        return;
+      }
+      cfg = normalizeConfig(parsed);
+      saveConfig();
+      buildMatchers();
+      close();
+      resetAll();
+      openSettings();      // reopen so the restored values are visible
+    });
+
     var actions = document.createElement('div');
     actions.className = 'xpkb-actions';
     var stats = document.createElement('div');
@@ -1397,7 +1497,7 @@
       cfg.lookupUnknown = lu.input.checked;
       cfg.normalizeEmoji = ne.input.checked;
       cfg.debug = dbg.input.checked;
-      store.set('config', cfg);
+      saveConfig();
       buildMatchers();
       close();
       resetAll();
