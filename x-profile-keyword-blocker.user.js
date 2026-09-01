@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Profile Keyword Blocker
 // @namespace    https://github.com/gregzuro/x-hider
-// @version      1.4.0
+// @version      1.5.0
 // @description  Hide posts on x.com from accounts whose profile matches your keywords - bio, display name, location, link or emoji.
 // @author       Greg Zuro
 // @license      MIT
@@ -20,7 +20,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @grant        unsafeWindow
-// @inject-into  page
+// @inject-into  auto
 // @noframes
 // ==/UserScript==
 
@@ -35,10 +35,26 @@
  * profile matches your keywords. Display names are additionally read straight
  * off the page, since those are rendered.
  *
- * The hook must run in the page's own JS world, which is what "@inject-into
- * page" is for. Without it, Violentmonkey falls back to an isolated world
- * because of x.com's CSP, and the script sees no traffic at all. Tampermonkey
- * ignores that directive and uses unsafeWindow, which works.
+ * The hook wants to run in the page's own JS world. x.com's CSP sends a
+ * script-src nonce, which makes the browser ignore the 'unsafe-inline' next to
+ * it, so getting there is browser-specific and can fail. On Chrome,
+ * Violentmonkey needs "Allow user scripts" enabled at chrome://extensions
+ * (Developer mode before Chrome 138). On Firefox its CSP workaround hangs off
+ * the document's response headers, which a cached load - soft reload, reopened
+ * tab - never delivers again. Tampermonkey depends on neither.
+ *
+ * So the script does not insist. "@inject-into auto" lets the manager put it
+ * wherever it can, and the script works out which world it landed in:
+ *
+ *   page     everything works, as described above.
+ *   xray     Firefox content world. unsafeWindow is a waived wrapper on the
+ *            real page window and DOM nodes expose .wrappedJSObject, so both
+ *            fetch and React's fibers are still reachable - anything the page
+ *            calls back into just has to go through exportFunction first.
+ *   isolated Chrome content world. No route to page data at all, so only
+ *            profiles already in the local cache can still be matched.
+ *            Diagnostics and the 12s self-check say so rather than failing
+ *            quietly.
  *
  * Menu commands (Violentmonkey / Tampermonkey toolbar icon):
  *   settings, diagnostics, list emoji in known profiles, clear profile cache
@@ -57,6 +73,45 @@
 
   var W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   var VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || 'dev';
+
+  /* ------------------------------------------------------------------ *
+   * which JS world did we land in?
+   *
+   * Firefox's content world still reaches the page through Xray waivers, so
+   * it is a usable fallback when injection into the page itself is refused.
+   * Chrome's content world is not: unsafeWindow is just window there.
+   * ------------------------------------------------------------------ */
+  // A separate window object plus Firefox's exportFunction is the signature of
+  // running outside the page's compartment with a way back in. Deliberately not
+  // probing the DOM for it: this runs at document-start, and a missing
+  // documentElement would silently disable the fallback for the whole session.
+  var xrayOK = false;
+  try {
+    xrayOK = W !== window && typeof exportFunction === 'function';
+  } catch (e) { xrayOK = false; }
+
+  // Firefox refuses to let page code call a content-world function unless it
+  // has been exported. Identity everywhere else, so one code path covers both.
+  function toPage(fn) {
+    if (!xrayOK) return fn;
+    try { return exportFunction(fn, W); } catch (e) { return fn; }
+  }
+
+  // The waived view of a DOM node, which is where React hangs its __reactFiber$
+  // expando. Same node when there is no wrapper in the way.
+  function waive(node) {
+    if (!xrayOK || !node) return node;
+    try { return node.wrappedJSObject || node; } catch (e) { return node; }
+  }
+
+  // A value handed back to page code has to be cloned across the compartment
+  // boundary, or the page gets an object it is not allowed to touch.
+  function toPageValue(v) {
+    if (!xrayOK) return v;
+    try { return cloneInto(v, W); } catch (e) { return undefined; }
+  }
+
+  function noop() {}
 
   /* ------------------------------------------------------------------ *
    * storage shim (works without GM_* if a manager is stingy with grants)
@@ -562,7 +617,9 @@
       }
     }
     try {
-      if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+      if (typeof headers.forEach === 'function' && !Array.isArray(headers)) {
+        // Headers, including a page-world one seen through an Xray wrapper,
+        // which would fail an instanceof against our own Headers.
         headers.forEach(function (v, k) { put(k, v); });
       } else if (Array.isArray(headers)) {
         headers.forEach(function (pair) { put(pair[0], pair[1]); });
@@ -579,62 +636,74 @@
     apiCreds.userByScreenName = url;
   }
 
+  // Every function the page will end up calling - the replacement itself, and
+  // each promise/event callback handed back to page objects - goes through
+  // toPage(). In the page world that is a no-op; in Firefox's content world it
+  // is what makes the hook legal at all.
   var origFetch = W.fetch;
+  var fetchHooked = false;
   if (typeof origFetch === 'function') {
-    W.fetch = function (input, init) {
-      var url = '';
-      try {
-        url = typeof input === 'string' ? input : (input && input.url) || '';
-        if (init && init.headers) rememberHeaders(init.headers);
-        else if (input && input.headers) rememberHeaders(input.headers);
-        rememberEndpoint(url);
-      } catch (e) { /* ignore */ }
+    try {
+      W.fetch = toPage(function (input, init) {
+        var url = '';
+        try {
+          url = typeof input === 'string' ? input : (input && input.url) || '';
+          if (init && init.headers) rememberHeaders(init.headers);
+          else if (input && input.headers) rememberHeaders(input.headers);
+          rememberEndpoint(url);
+        } catch (e) { /* ignore */ }
 
-      var result = origFetch.apply(this || W, arguments);
-      try {
-        if (isApiUrl(url) && result && typeof result.then === 'function') {
-          result.then(function (res) {
-            try {
-              if (!res || typeof res.clone !== 'function') return;
-              res.clone().text().then(scanPayload).catch(function () {});
-            } catch (e) { /* ignore */ }
-          }).catch(function () {});
-        }
-      } catch (e) { /* ignore */ }
-      return result;
-    };
+        var result = origFetch.apply(this || W, arguments);
+        try {
+          if (isApiUrl(url) && result && typeof result.then === 'function') {
+            result.then(toPage(function (res) {
+              try {
+                if (!res || typeof res.clone !== 'function') return;
+                res.clone().text().then(toPage(scanPayload)).catch(toPage(noop));
+              } catch (e) { /* ignore */ }
+            })).catch(toPage(noop));
+          }
+        } catch (e) { /* ignore */ }
+        return result;
+      });
+      fetchHooked = true;
+    } catch (e) { log('fetch hook refused', e && e.message); }
   }
 
-  var XHR = W.XMLHttpRequest;
-  if (XHR && XHR.prototype) {
-    var origOpen = XHR.prototype.open;
-    var origSend = XHR.prototype.send;
-    var origSetHeader = XHR.prototype.setRequestHeader;
+  var xhrHooked = false;
+  try {
+    var XHR = W.XMLHttpRequest;
+    if (XHR && XHR.prototype) {
+      var origOpen = XHR.prototype.open;
+      var origSend = XHR.prototype.send;
+      var origSetHeader = XHR.prototype.setRequestHeader;
 
-    XHR.prototype.open = function (method, url) {
-      try { this.__xpkbUrl = String(url); rememberEndpoint(String(url)); } catch (e) { /* ignore */ }
-      return origOpen.apply(this, arguments);
-    };
-    XHR.prototype.setRequestHeader = function (k, v) {
-      try {
-        var h = {}; h[k] = v; rememberHeaders(h);
-      } catch (e) { /* ignore */ }
-      return origSetHeader.apply(this, arguments);
-    };
-    XHR.prototype.send = function () {
-      try {
-        if (isApiUrl(this.__xpkbUrl || '')) {
-          this.addEventListener('load', function () {
-            try {
-              if (this.responseType === '' || this.responseType === 'text') scanPayload(this.responseText);
-              else if (this.responseType === 'json' && this.response) scanPayload(JSON.stringify(this.response));
-            } catch (e) { /* ignore */ }
-          });
-        }
-      } catch (e) { /* ignore */ }
-      return origSend.apply(this, arguments);
-    };
-  }
+      XHR.prototype.open = toPage(function (method, url) {
+        try { this.__xpkbUrl = String(url); rememberEndpoint(String(url)); } catch (e) { /* ignore */ }
+        return origOpen.apply(this, arguments);
+      });
+      XHR.prototype.setRequestHeader = toPage(function (k, v) {
+        try {
+          var h = {}; h[k] = v; rememberHeaders(h);
+        } catch (e) { /* ignore */ }
+        return origSetHeader.apply(this, arguments);
+      });
+      XHR.prototype.send = toPage(function () {
+        try {
+          if (isApiUrl(this.__xpkbUrl || '')) {
+            this.addEventListener('load', toPage(function () {
+              try {
+                if (this.responseType === '' || this.responseType === 'text') scanPayload(this.responseText);
+                else if (this.responseType === 'json' && this.response) scanPayload(JSON.stringify(this.response));
+              } catch (e) { /* ignore */ }
+            }));
+          }
+        } catch (e) { /* ignore */ }
+        return origSend.apply(this, arguments);
+      });
+      xhrHooked = true;
+    }
+  } catch (e) { log('xhr hook refused', e && e.message); }
 
   /* ------------------------------------------------------------------ *
    * best-effort profile lookup for handles never seen in a payload
@@ -676,10 +745,10 @@
     var f = origFetch || W.fetch;
     try {
       f.call(W, url.toString(), { credentials: 'include', headers: headers })
-        .then(function (r) { return r.text(); })
-        .then(function (t) { scanPayload(t); log('looked up', handle); })
-        .catch(function (e) { log('lookup failed', handle, e && e.message); })
-        .then(done, done);
+        .then(toPage(function (r) { return r.text(); }))
+        .then(toPage(function (t) { scanPayload(t); log('looked up', handle); }))
+        .catch(toPage(function (e) { log('lookup failed', handle, e && e.message); }))
+        .then(toPage(done), toPage(done));
     } catch (e) { done(); }
   }
 
@@ -689,14 +758,20 @@
    * If the script loaded after some timeline data already arrived (soft
    * navigation, script updated mid-session), the network hook missed it. The
    * data is still hanging off the rendered nodes as React props, so pull it
-   * from there. This only works when the script runs in the page's own JS
-   * world - an isolated content-script world cannot see React's expandos,
-   * which is also exactly the condition that breaks the network hook.
+   * from there.
+   *
+   * On Firefox this is also the primary source rather than a backstop: when
+   * injection into the page world was refused, waive() still reaches React's
+   * expandos even though the script is in the content world. Chrome's content
+   * world has no equivalent, so there this really is only a backstop.
    * ------------------------------------------------------------------ */
   function reactKey(node) {
-    for (var k in node) {
-      if (k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0) return k;
-    }
+    if (!node) return null;
+    try {
+      for (var k in node) {
+        if (k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0) return k;
+      }
+    } catch (e) { /* wrapper can refuse enumeration */ }
     return null;
   }
 
@@ -710,6 +785,15 @@
     return false;
   }
 
+  // 'page' | 'xray' | 'isolated'. Only settles once the timeline has rendered,
+  // since the page-world probe needs a React node to look at.
+  function worldName() {
+    if (detectPageWorld()) return 'page';
+    return xrayOK ? 'xray' : 'isolated';
+  }
+
+  function fiberReachable() { return detectPageWorld() || xrayOK; }
+
   var FIBER_SKIP = {
     stateNode: 1, 'return': 1, child: 1, sibling: 1, alternate: 1,
     _owner: 1, _store: 1, ref: 1, dependencies: 1, updateQueue: 1,
@@ -719,7 +803,11 @@
   function walkProps(node, depth, seen, budget) {
     if (!node || typeof node !== 'object' || depth > 7) return;
     if (budget.n-- < 0) return;
-    if (typeof Node !== 'undefined' && node instanceof Node) return;
+    // Duck-typed rather than `instanceof Node`, which is false for a page-world
+    // node seen from the content world.
+    try {
+      if (typeof node.nodeType === 'number' && typeof node.nodeName === 'string') return;
+    } catch (e) { return; }
     if (seen.has(node)) return;
     seen.add(node);
 
@@ -745,13 +833,17 @@
   }
 
   function harvestFromFiber(article) {
-    if (!detectPageWorld()) return false;
-    var key = reactKey(article);
+    if (!fiberReachable()) return false;
+    var el = waive(article);
+    var key = reactKey(el);
     if (!key) return false;
     var before = users.size;
-    var fiber = article[key];
+    var fiber;
+    try { fiber = el[key]; } catch (e) { return false; }
     var seen = new WeakSet();
-    var budget = { n: 8000 };
+    // Property reads through an Xray waiver are not free, and in that world
+    // this runs for every post rather than the occasional straggler.
+    var budget = { n: pageWorld ? 8000 : 4000 };
     var hops = 0;
     while (fiber && hops++ < 25 && budget.n > 0) {
       if (fiber.memoizedProps) walkProps(fiber.memoizedProps, 0, seen, budget);
@@ -1024,8 +1116,13 @@
     var extra = { name: domDisplayName(article) };
     var verdict = decide(handles, extra);
 
-    if (verdict.state === 'unknown' && article.dataset.xpkbFiber !== '1') {
-      article.dataset.xpkbFiber = '1';
+    // With a live network hook the fibers are a rare straggler check, so one
+    // pass is enough. When they are the only source a post can render before
+    // its author object is attached, so give it a couple more chances.
+    var tries = parseInt(article.dataset.xpkbFiber || '0', 10) || 0;
+    var maxTries = xrayOK && !pageWorld ? 3 : 1;
+    if (verdict.state === 'unknown' && tries < maxTries) {
+      article.dataset.xpkbFiber = String(tries + 1);
       if (harvestFromFiber(article)) verdict = decide(handles, extra);
     }
 
@@ -1313,6 +1410,16 @@
   /* ------------------------------------------------------------------ *
    * diagnostics
    * ------------------------------------------------------------------ */
+  function worldDescription() {
+    var w = worldName();
+    if (w === 'page') return 'page (full access)';
+    if (w === 'xray') {
+      return 'Firefox content world, Xray fallback - profiles from React props' +
+        (fetchHooked ? ' and an exported fetch hook' : ' only, fetch hook was refused');
+    }
+    return 'isolated  <- cannot read new profiles (cached ones still apply)';
+  }
+
   function diagReport() {
     var withBio = 0;
     var samples = [];
@@ -1332,8 +1439,9 @@
     return [
       'X Profile Keyword Blocker ' + VERSION,
       '',
-      'runs in page world : ' + (detectPageWorld() ? 'yes' : 'NO  <- network hook cannot work'),
-      'fetch hook installed: ' + (typeof origFetch === 'function' ? 'yes' : 'NO'),
+      'JS world           : ' + worldDescription(),
+      'fetch hook installed: ' + (fetchHooked ? 'yes' : 'NO'),
+      'xhr hook installed : ' + (xhrHooked ? 'yes' : 'no'),
       'API payloads seen  : ' + stats.payloads,
       'profiles known     : ' + users.size + ' (' + stats.harvested + ' learned this session, ' +
         stats.fiber + ' from React props)',
@@ -1451,13 +1559,19 @@
   // no bio data at all and the script can only ever sit there doing nothing.
   setTimeout(function () {
     if (stats.payloads > 0 || users.size > 0) return;
+    var w = worldName();
     console.warn(
       '[xpkb] No profile data captured after 12s.\n' +
-      (detectPageWorld()
+      (w === 'page'
         ? 'The script is in the page world but saw no X API responses. Reload the tab (the hook must be in place before the first timeline request).'
-        : 'The script is NOT running in the page JS world, so it cannot see x.com traffic.\n' +
-          'In Violentmonkey: open the script, Settings tab, set "Inject into" to "page".\n' +
-          'In Tampermonkey: make sure @grant unsafeWindow is allowed and the script is not in a strict sandbox.') +
+        : w === 'xray'
+          ? 'Running in the Firefox content-world fallback, where profiles are read off rendered\n' +
+            'posts rather than the network. Scroll the timeline and check again. If it stays empty,\n' +
+            'open the script in Violentmonkey, Settings tab, and set "Inject into" to "page".'
+          : 'The script is NOT running in the page JS world, so it cannot see x.com traffic.\n' +
+            'On Chrome: chrome://extensions, Violentmonkey, Details, enable "Allow user scripts"\n' +
+            '(or Developer mode before Chrome 138), then restart the browser.\n' +
+            'In Tampermonkey: make sure @grant unsafeWindow is allowed and the script is not in a strict sandbox.') +
       '\nRun xpkbDiag() for details.'
     );
   }, 12000);
@@ -1480,10 +1594,10 @@
 
   // Escape hatch if the manager menu is unavailable: run xpkbSettings() in the console.
   try {
-    W.xpkbSettings = openSettings;
-    W.xpkbDiag = function () { console.log('[xpkb]\n' + diagReport()); return stats; };
+    W.xpkbSettings = toPage(openSettings);
+    W.xpkbDiag = toPage(function () { console.log('[xpkb]\n' + diagReport()); return toPageValue(stats); });
     // Per-post breakdown of what the script knows about everything on screen.
-    W.xpkbWhy = function () {
+    W.xpkbWhy = toPage(function () {
       var rows = [];
       var arts = document.querySelectorAll('article');
       for (var i = 0; i < arts.length; i++) {
@@ -1502,10 +1616,10 @@
       }
       if (console.table) console.table(rows); else console.log(rows);
       return rows.length;
-    };
-    W.xpkbSample = function () { console.log(shapeSamples); return shapeSamples; };
-    W.xpkbEmojiScan = emojiScan;
-    W.xpkbEmojiNames = function () {
+    });
+    W.xpkbSample = toPage(function () { console.log(shapeSamples); return toPageValue(shapeSamples); });
+    W.xpkbEmojiScan = toPage(emojiScan);
+    W.xpkbEmojiNames = toPage(function () {
       var rows = Object.keys(EMOJI_NAMES).sort().map(function (n) {
         return { name: n, emoji: EMOJI_NAMES[n], keyword: 'emoji:' + n };
       });
@@ -1515,7 +1629,7 @@
       rows = groups.concat(rows);
       if (console.table) console.table(rows); else console.log(rows);
       return rows.length;
-    };
+    });
   } catch (e) { /* ignore */ }
 
   log('ready', cfg);

@@ -27,6 +27,35 @@ Display names are additionally read straight off the page, since those are rende
 3. Reload x.com. A hard reload matters: the hook has to be in place before the first
    timeline request.
 
+### The page world
+
+x.com's CSP sends a `script-src` nonce, which makes the browser ignore the
+`'unsafe-inline'` sitting next to it in the same header. So nothing can drop a plain
+`<script>` into x.com's own JS world, and that world is where the network hook wants to
+be. Getting there is browser-specific and can fail, so the script does not insist: it
+declares `@inject-into auto`, works out which world it actually landed in, and adapts.
+`xpkbDiag()` reports which one on the `JS world` line.
+
+| World | When | What works |
+| --- | --- | --- |
+| `page` | Tampermonkey anywhere; Violentmonkey when injection succeeds | Everything: network hook plus React props |
+| `xray` | Firefox + Violentmonkey, injection refused | React props, plus the network hook via `exportFunction` |
+| `isolated` | Chrome + Violentmonkey, injection refused | Only profiles already in the local cache. Enable the toggle below |
+
+**Chrome:** if diagnostics say `isolated`, go to `chrome://extensions`, open
+Violentmonkey's *Details*, and enable **Allow user scripts** (on Chrome older than 138,
+turn on *Developer mode* at the top right of the same page instead). That is what lets
+Violentmonkey use Chrome's `userScripts` API. Restart the browser after flipping it.
+
+**Firefox:** Violentmonkey's CSP workaround depends on seeing the document's response
+headers, and a page served from cache never delivers them again, so soft reloads and
+reopened tabs land in the content world. Firefox is generous there in a way Chrome is
+not: `unsafeWindow` is a real handle on the page window and DOM nodes expose
+`.wrappedJSObject`, so the script reads author profiles straight off React's fibers on
+the rendered posts, and re-exports its `fetch` wrapper through `exportFunction`. It
+keeps working; profiles are just learned as posts render rather than as responses
+arrive, so a post can occasionally appear for a frame before it is hidden.
+
 Open settings from the extension's toolbar menu ("Profile Keyword Blocker: settings"),
 or run `xpkbSettings()` in the console.
 
@@ -106,6 +135,8 @@ Run `xpkbDiag()`, or use the diagnostics menu command.
 | `API payloads seen: 0` | The hook was installed too late. Hard-reload the tab. |
 | `profiles WITH a bio: 0 of N` | The bio is not where the extractor looks. The `raw User object shapes` section of the report shows where X actually put it. |
 | Posts still visible | `xpkbWhy()` prints a row per post on screen: handle, stored bio, display name, and verdict. |
+| Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Expected on Firefox, and handled: page-world injection needs the CSP worked around, which hangs off response headers a cached load never re-delivers. Since 1.5.0 the script runs in the content world instead and reads profiles off React's fibers. `xpkbDiag()` will say `JS world: xray`. To stop the warning entirely, open the script in Violentmonkey, Settings tab, and set "Inject into" to `content`: on Firefox that costs nothing but the pre-render head start. |
+| `JS world: isolated` | Chrome + Violentmonkey with page-world injection refused, and Chrome's content world has no route to page data. Enable **Allow user scripts**, see [The page world](#the-page-world). |
 
 Accounts whose profile is unknown are never hidden. That is deliberate: a stub record
 must not silently whitelist an account, so a profile with no usable text counts as
@@ -127,9 +158,11 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-32 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
-sequences, field scoping, and display-name matching. The tests pull the pure sections
-out of the userscript, so they run without a browser.
+45 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+sequences, field scoping, display-name matching, and the three JS worlds. The tests pull
+the pure sections out of the userscript, so they run without a browser. The world cases
+build a stand-in for each of `page`, `xray` and `isolated` and check that a user object
+buried in React props is found through the right access path in each.
 
 ## License
 
