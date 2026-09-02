@@ -1551,6 +1551,8 @@
     return [
       'X Profile Keyword Blocker ' + VERSION,
       '',
+      'WORKING            : ' + (stats.payloads || stats.harvested || stats.fiber
+        ? 'yes' : 'NO - nothing has been learned this session'),
       'JS world           : ' + worldDescription(),
       'fetch hook installed: ' + (fetchHooked ? 'yes' : 'NO'),
       'xhr hook installed : ' + (xhrHooked ? 'yes' : 'no'),
@@ -1670,7 +1672,11 @@
   // Loud, one-off warning if the interception layer is dead: without it there is
   // no bio data at all and the script can only ever sit there doing nothing.
   setTimeout(function () {
-    if (stats.payloads > 0 || users.size > 0) return;
+    // Deliberately NOT users.size: the profile cache is restored from storage
+    // at startup, so on any tab but the very first it is non-empty even when
+    // the interception layer is stone dead. Only what was learned this session
+    // says the script is actually working.
+    if (stats.payloads > 0 || stats.harvested > 0 || stats.fiber > 0) return;
     var w = worldName();
     console.warn(
       '[xpkb] No profile data captured after 12s.\n' +
