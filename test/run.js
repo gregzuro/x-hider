@@ -84,6 +84,23 @@ function verdict(handle, keywords, fields, domName) {
   return api.evaluate(handle, domName ? { name: domName } : null).state;
 }
 
+/* ---- hashtags ---- */
+console.log('\n--- hashtags ---');
+check('bare keyword, bare bio',            matches(['Christian'], 'a Christian dad'), true);
+check('bare keyword finds the hashtag',    matches(['Christian'], 'a #Christian dad'), true);
+check('hashed keyword finds the bare word',matches(['#Christian'], 'a Christian dad'), true);
+check('hashed keyword finds the hashtag',  matches(['#Christian'], 'a #Christian dad'), true);
+check('hashed keyword, doubled hash',      matches(['#Christian'], 'a ##Christian dad'), true);
+check('hashed keyword, no match at all',   matches(['#Christian'], 'a normal bio'), false);
+check('word mode, bare vs hashtag',        matches(['Christian'], 'a #Christian dad', { matchMode: 'word' }), true);
+check('word mode, hashed vs bare',         matches(['#Christian'], 'a Christian dad', { matchMode: 'word' }), true);
+check('word mode, hashed vs hashtag',      matches(['#Christian'], 'a #Christian dad', { matchMode: 'word' }), true);
+check('word mode still refuses a substring', matches(['#Christian'], 'unChristian of him', { matchMode: 'word' }), false);
+check('lone hash stays literal',           matches(['#'], 'tagged #crypto'), true);
+check('lone hash does not match everything', matches(['#'], 'no tags here'), false);
+check('regex mode leaves the hash strict', matches(['#crypto'], 'i love crypto', { matchMode: 'regex' }), false);
+check('regex mode matches the hashtag',    matches(['#crypto'], 'i love #crypto', { matchMode: 'regex' }), true);
+
 console.log('\n--- field scoping ---');
 check('flag in name, name field off',     verdict('flagdad', ['flag:US']), 'ok');
 check('flag in name, name field on',      verdict('flagdad', ['flag:US'], { name: true }), 'match');

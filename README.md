@@ -72,9 +72,24 @@ One per line. Everything is case-insensitive by default.
 | `U+271D` | by code point (`U+1F1FA U+1F1E6` for sequences) |
 | `flag:UA` | a country flag, from its ISO code |
 | `emoji:cross` | a whole family: `✝ ✞ ✟ ✠ ☦ ☧ ☨ ☩` |
+| `#crypto` | `#crypto` and plain `crypto`, since the leading hash is optional |
 
 Emoji group names: `cross`, `christian`, `religion`, `crypto`, `pride`.
 `xpkbEmojiNames()` lists every name.
+
+### Hashtags
+
+Bios are written both ways, `Christian` and `#Christian`, and you get both either way.
+
+A bare keyword already finds the hashtag: `#` is not a word character, so neither
+substring nor word matching is bothered by it. The reverse needed help, so a **leading
+`#` on a keyword is treated as optional** - `#crypto` finds `#crypto` and plain `crypto`
+alike. Paste a keyword straight out of someone's bio, hash and all, and it behaves the
+way you would expect.
+
+Word mode still refuses a substring, so `#Christian` does not match `unChristian`. Regex
+mode is you being explicit and leaves `#` exactly as written, which is where to go if you
+want the hashtag form and nothing else.
 
 ### Field prefixes
 
@@ -205,9 +220,9 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-65 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
-sequences, field scoping, display-name matching, the three JS worlds, and settings
-persistence. The tests pull the pure sections out of the userscript, so they run without
+79 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+sequences, hashtags, field scoping, display-name matching, the three JS worlds, and
+settings persistence. The tests pull the pure sections out of the userscript, so they run without
 a browser. The world cases build a stand-in for each of `page`, `xray` and `isolated` and
 check that a user object buried in React props is found through the right access path in
 each; the persistence cases load a 1.4.0-shaped config and recover an orphaned one.

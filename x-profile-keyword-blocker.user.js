@@ -473,11 +473,24 @@
             return escapeRe(normText(lit));
           }).join('|'), flags + 'u');
         } else if (cfg.matchMode === 'regex') {
+          // Regex mode is the user being explicit. Leave "#" alone there.
           re = new RegExp(normText(token), flags);
-        } else if (cfg.matchMode === 'word' && /[\p{L}\p{N}]/u.test(token)) {
-          re = new RegExp('(^|[^\\p{L}\\p{N}_])' + escapeRe(normText(token)) + '($|[^\\p{L}\\p{N}_])', flags + 'u');
         } else {
-          re = new RegExp(escapeRe(normText(token)), flags + 'u');
+          // Bios are written both ways: "Christian" and "#Christian". A bare
+          // keyword already catches the hashtag form, because "#" is not a word
+          // character and substring matching does not care. The reverse needed
+          // help: a keyword copied straight out of a bio, hash and all, would
+          // only ever find the hashtag. So a leading "#" on a keyword is
+          // treated as optional and both forms match either way.
+          var hashed = /^#+(.+)$/.exec(token);          // "#" alone stays literal
+          var body = hashed ? hashed[1] : token;
+          var lead = hashed ? '#*' : '';
+          if (cfg.matchMode === 'word' && /[\p{L}\p{N}]/u.test(body)) {
+            re = new RegExp('(^|[^\\p{L}\\p{N}_])' + lead + escapeRe(normText(body)) +
+              '($|[^\\p{L}\\p{N}_])', flags + 'u');
+          } else {
+            re = new RegExp(lead + escapeRe(normText(body)), flags + 'u');
+          }
         }
       } catch (e) {
         console.warn('[xpkb] bad keyword pattern, skipped:', token, e.message);
