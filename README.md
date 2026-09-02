@@ -102,6 +102,26 @@ the reason. Run `xpkbFind("christian")`: it ignores your keyword list and report
 field is being searched. A hashtag in someone's display name is invisible with the
 default settings, which looks exactly like broken matching.
 
+### Lookalike characters
+
+X bios are full of text that reads as one thing and is encoded as another, some of it
+decorative and some of it deliberate evasion:
+
+| Looks like | Actually is |
+| --- | --- |
+| `Israel` | `Іsrael` with a Cyrillic capital I |
+| `Israel` | `Israel` with a zero-width joiner wedged in the middle |
+| `Israel` | `𝐈𝐬𝐫𝐚𝐞𝐥` in mathematical bold, one of dozens of styled runs |
+| `Israel` | `Ｉｓｒａｅｌ` in fullwidth Latin |
+
+Every one of those makes a keyword typed by hand miss text that the same word **pasted out
+of the profile** matches, which reads as the matcher being broken. All of them are folded
+away now, on your keyword and on the profile alike, so the two sides meet in the middle.
+Zero-width characters are dropped, styled and fullwidth Latin and accents are normalised,
+and Cyrillic and Greek lookalikes are mapped to their Latin twins.
+
+Untick "Match lookalike characters" in settings to turn it off.
+
 ### When a keyword does not fire
 
 Out of the box only the **bio** is searched, and that is the single most common reason a
@@ -114,6 +134,11 @@ in a field that is switched off, it warns in the console after 15 seconds, names
 field and the profile, and `xpkbDiag()` carries a `near misses` line with the list.
 `xpkbNearMisses()` prints the lot on demand, and `xpkbFind("israel")` answers the same
 question from the other end: where does this text actually live?
+
+When you want the whole decision for one account, **`xpkbExplain("DeniseInCanada")`**
+prints what is stored in every field with non-ASCII shown as `\uXXXX`, which fields are
+searched, every compiled keyword regex, and for each keyword-and-field pair whether it was
+tested and whether it hit.
 
 The fix is either to tick the field in settings, which widens every unscoped keyword, or
 to scope that one keyword and leave the rest alone:
@@ -184,6 +209,7 @@ Run `xpkbDiag()`, or use the diagnostics menu command.
 | Posts still visible | `xpkbWhy()` prints a row per post on screen: handle, stored bio, display name, and verdict. |
 | A keyword that should obviously match, does not | `xpkbFind("that text")` ignores your keyword list and says which field the text is really in, and whether that field is searched. Most often it is the display name or the location, both off by default. |
 | `near misses: N profile(s) match in a field that is switched OFF` | Exactly that. `xpkbNearMisses()` lists them. Tick the field, or scope the keyword to it. |
+| A keyword matches when pasted from a profile but not when typed | Lookalike characters. Handled by default now; `xpkbExplain("handle")` shows the stored text with non-ASCII escaped so you can see exactly which character it is. |
 | Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Expected on Firefox, and handled: page-world injection needs the CSP worked around, which hangs off response headers a cached load never re-delivers. Since 1.5.0 the script runs in the content world instead and reads profiles off React's fibers. `xpkbDiag()` will say `JS world: xray`. To stop the warning entirely, open the script in Violentmonkey, Settings tab, and set "Inject into" to `content`: on Firefox that costs nothing but the pre-render head start. |
 | `JS world: isolated` | Chrome + Violentmonkey with page-world injection refused, and Chrome's content world has no route to page data. Enable **Allow user scripts**, see [The page world](#the-page-world). |
 
@@ -254,9 +280,9 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-94 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
-sequences, hashtags, field scoping, display-name matching, the three JS worlds, and
-settings persistence. The tests pull the pure sections out of the userscript, so they run without
+111 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+sequences, hashtags, lookalike characters, field scoping, display-name matching, near
+misses, the three JS worlds, and settings persistence. The tests pull the pure sections out of the userscript, so they run without
 a browser. The world cases build a stand-in for each of `page`, `xray` and `isolated` and
 check that a user object buried in React props is found through the right access path in
 each; the persistence cases load a 1.4.0-shaped config and recover an orphaned one.

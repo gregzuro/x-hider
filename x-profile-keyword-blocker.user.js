@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Profile Keyword Blocker
 // @namespace    https://github.com/gregzuro/x-hider
-// @version      1.6.0
+// @version      1.7.0
 // @description  Hide posts on x.com from accounts whose profile matches your keywords - bio, display name, location, link or emoji.
 // @author       Greg Zuro
 // @license      MIT
@@ -62,8 +62,9 @@
  * Menu commands (Violentmonkey / Tampermonkey toolbar icon):
  *   settings, diagnostics, list emoji in known profiles, clear profile cache
  *
- * Console helpers: xpkbSettings() xpkbDiag() xpkbWhy() xpkbFind() xpkbNearMisses()
- *                  xpkbEmojiScan() xpkbEmojiNames() xpkbSample()
+ * Console helpers: xpkbSettings() xpkbDiag() xpkbWhy() xpkbExplain(handle)
+ *                  xpkbFind() xpkbNearMisses() xpkbEmojiScan() xpkbEmojiNames()
+ *                  xpkbSample()
  *
  * Data: profiles seen are cached locally via GM storage (2500 entries max) so
  * filtering works immediately on reload. Nothing is sent anywhere. The optional
@@ -164,6 +165,7 @@
     filterUserCells: true,
     lookupUnknown: false,   // off by default: it issues requests as the user
     normalizeEmoji: true,
+    foldLookalikes: true,   // treat Israel, Іsrael and 𝐈srael as the same word
     debug: false
   };
 
@@ -241,7 +243,7 @@
     if (Array.isArray(raw.keywords)) out.keywords = raw.keywords.slice();
     if (typeof raw.matchMode === 'string') out.matchMode = raw.matchMode;
     ['caseSensitive', 'checkRetweeter', 'checkQuoted', 'filterUserCells', 'lookupUnknown',
-      'normalizeEmoji', 'debug']
+      'normalizeEmoji', 'foldLookalikes', 'debug']
       .forEach(function (k) { if (typeof raw[k] === 'boolean') out[k] = raw[k]; });
     if (raw.action === 'hide' || raw.action === 'collapse') out.action = raw.action;
     // 0 means "written before the schema was versioned", which is still valid.
@@ -374,9 +376,45 @@
   // is listed on its own.
   var EMOJI_CLUSTER = /[\u{1F1E6}-\u{1F1FF}]{2}|₿|(?:\p{Extended_Pictographic}|\p{So})(?:[\u{1F3FB}-\u{1F3FF}]|️)*(?:‍(?:\p{Extended_Pictographic}|\p{So})(?:[\u{1F3FB}-\u{1F3FF}]|️)*)*/gu;
 
+  /*
+   * Text that looks identical on screen but is not the same characters. X bios
+   * are full of it, some of it decorative and some of it deliberate evasion:
+   *
+   *   Israel  vs  \u0406srael    Cyrillic capital I, indistinguishable
+   *   Israel  vs  Isra\u200Del    a zero-width joiner wedged in the middle
+   *   Israel  vs  \uD835\uDC08srael  mathematical bold, one of dozens of styled runs
+   *
+   * Every one of those makes a keyword typed by hand miss, while the same word
+   * pasted out of the profile matches - which reads as the matcher being
+   * broken. Fold all three away, on the keyword and the profile alike, so the
+   * two sides meet in the middle.
+   */
+  var ZERO_WIDTH = /[\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]/g;
+  var COMBINING = /[\u0300-\u036F]/g;
+
+  // NFKD folds styled and fullwidth Latin, but leaves Cyrillic and Greek
+  // lookalikes alone, since to Unicode they are genuinely different letters.
+  var CONFUSABLE_FROM = 'АВЕКМНОРСТУХаеорсухіІјЈѕЅԁһԛѡΑΒΕΖΗΙΚΜΝΟΡΤΥΧαορι';
+  var CONFUSABLE_TO = 'ABEKMHOPCTYXaeopcyxiIjJsSdhqwABEZHIKMNOPTYXaopi';
+  var CONFUSABLES = {};
+  for (var ci = 0; ci < CONFUSABLE_FROM.length; ci++) {
+    CONFUSABLES[CONFUSABLE_FROM[ci]] = CONFUSABLE_TO[ci] || CONFUSABLE_FROM[ci];
+  }
+  var CONFUSABLE_RE = new RegExp('[' + CONFUSABLE_FROM + ']', 'g');
+
+  function foldLookalikes(str) {
+    var out = str.replace(ZERO_WIDTH, '');
+    try {
+      out = out.normalize('NFKD').replace(COMBINING, '');
+    } catch (e) { /* engine without normalize(): fall through */ }
+    return out.replace(CONFUSABLE_RE, function (c) { return CONFUSABLES[c] || c; });
+  }
+
   function normText(str) {
-    if (!cfg.normalizeEmoji) return str;
-    return String(str)
+    var out = String(str);
+    if (cfg.foldLookalikes !== false) out = foldLookalikes(out);
+    if (!cfg.normalizeEmoji) return out;
+    return out
       .replace(/[︎️]/g, '')                 // variation selectors
       .replace(/[\u{1F3FB}-\u{1F3FF}]/gu, '');        // skin tone modifiers
   }
@@ -1485,8 +1523,9 @@
     var uc = checkbox('Also filter user lists / who to follow', cfg.filterUserCells);
     var lu = checkbox('Fetch profiles not seen in the feed (extra API requests)', cfg.lookupUnknown);
     var ne = checkbox('Ignore emoji skin tones and variation selectors', cfg.normalizeEmoji);
+    var fl = checkbox('Match lookalike characters (\u0406srael, \uD835\uDC08srael, Isra\u200Del)', cfg.foldLookalikes);
     var dbg = checkbox('Debug logging', cfg.debug);
-    [rt, qt, uc, lu, ne, dbg].forEach(function (c) { scopeRow.appendChild(c.wrap); });
+    [rt, qt, uc, lu, ne, fl, dbg].forEach(function (c) { scopeRow.appendChild(c.wrap); });
     panel.appendChild(scopeRow);
 
     var backupLabel = document.createElement('label');
@@ -1567,6 +1606,7 @@
       cfg.filterUserCells = uc.input.checked;
       cfg.lookupUnknown = lu.input.checked;
       cfg.normalizeEmoji = ne.input.checked;
+      cfg.foldLookalikes = fl.input.checked;
       cfg.debug = dbg.input.checked;
       saveConfig();
       buildMatchers();
@@ -1767,6 +1807,69 @@
     return rows.length;
   }
 
+  // Escapes everything outside printable ASCII. A homoglyph, a zero-width
+  // joiner or a non-breaking space is invisible on screen and in a copy-paste,
+  // and is the reason a keyword typed by hand can miss text that looks
+  // identical to the one pasted out of the profile.
+  function visible(str) {
+    return String(str).replace(/[^\x20-\x7E]/g, function (c) {
+      return '\\u' + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+    });
+  }
+
+  // The whole decision for one account, laid out: what is stored in each field,
+  // which fields are searched, every compiled keyword regex, and for each
+  // keyword-and-field pair whether it was tested and whether it hit.
+  function explain(handle) {
+    var h = String(handle == null ? '' : handle).replace(/^@/, '').toLowerCase();
+    if (!h) { console.warn('[xpkb] usage: xpkbExplain("DeniseInCanada")'); return 0; }
+
+    var u = users.get(h);
+    if (!u) {
+      console.log('[xpkb] @' + h + ' is not among the ' + users.size + ' profiles known here.\n' +
+        '       Nothing can match a profile that was never learned - check the WORKING\n' +
+        '       line in xpkbDiag(), and scroll one of their posts into view first.');
+      return 0;
+    }
+
+    var values = profileValues(u, h, '');
+    var stored = ['[xpkb] @' + h + '  (non-ASCII shown as \\uXXXX)'];
+    FIND_FIELDS.forEach(function (f) {
+      var v = (values[f] || []).filter(Boolean).join(' | ');
+      while (f.length < 13) f += ' ';
+      stored.push('  ' + f + (cfg.fields[f.trim()] ? '[searched] ' : '[   off  ] ') +
+        (v ? visible(v) : '(empty)'));
+    });
+    console.log(stored.join('\n'));
+
+    if (!matchers.length) { console.log('[xpkb] no active keywords'); return 0; }
+
+    var rows = [];
+    matchers.forEach(function (m) {
+      FIND_FIELDS.forEach(function (f) {
+        var vals = (values[f] || []).filter(Boolean);
+        var tested = m.field ? (m.field === '*' || m.field === f) : !!cfg.fields[f];
+        var hit = false;
+        vals.forEach(function (v) {
+          m.re.lastIndex = 0;
+          if (m.re.test(normText(v))) hit = true;
+        });
+        if (!vals.length && !tested) return;          // nothing to say about it
+        rows.push({
+          keyword: visible(m.raw),
+          regex: visible(String(m.re)),
+          field: f,
+          tested: tested ? 'yes' : (m.field ? 'no, scoped to ' + m.field : 'no, ' + f + ' is off'),
+          text_matches: vals.length ? (hit ? 'YES' : 'no') : 'field empty',
+          hides: tested && hit ? 'HIDES' : ''
+        });
+      });
+    });
+    if (console.table) console.table(rows); else console.log(rows);
+    console.log('[xpkb] verdict for @' + h + ': ' + evaluate(h, null).state);
+    return rows.length;
+  }
+
   function openDiagnostics() {
     var text = diagReport();
     console.log('[xpkb]\n' + text);
@@ -1897,6 +2000,8 @@
     // xpkbFind("christian") - which field is that text actually in?
     W.xpkbFind = toPage(function (needle) { return findText(needle); });
     // xpkbNearMisses() - who would match if the disabled fields were on?
+    // xpkbExplain("DeniseInCanada") - the whole decision for one account
+    W.xpkbExplain = toPage(function (handle) { return explain(handle); });
     W.xpkbNearMisses = toPage(function () {
       var rows = nearMisses(200);
       if (console.table) console.table(rows); else console.log(rows);

@@ -43,7 +43,9 @@ function check(label, got, want) {
 
 /* ---- keyword compilation and emoji normalization ---- */
 function matches(keywords, text, opts) {
-  Object.assign(cfg, { matchMode: 'substring', caseSensitive: false, normalizeEmoji: true }, opts || {});
+  Object.assign(cfg, {
+    matchMode: 'substring', caseSensitive: false, normalizeEmoji: true, foldLookalikes: true
+  }, opts || {});
   cfg.keywords = keywords;
   api.buildMatchers();
   const hay = api.normText(text);
@@ -104,6 +106,33 @@ check('lone hash stays literal',           matches(['#'], 'tagged #crypto'), tru
 check('lone hash does not match everything', matches(['#'], 'no tags here'), false);
 check('regex mode leaves the hash strict', matches(['#crypto'], 'i love crypto', { matchMode: 'regex' }), false);
 check('regex mode matches the hashtag',    matches(['#crypto'], 'i love #crypto', { matchMode: 'regex' }), true);
+
+/* ---- lookalike characters ---- */
+/*
+ * Same word to a reader, different code points to a regex. This is what makes a
+ * keyword typed by hand miss text that the same word pasted out of the profile
+ * matches, which is indistinguishable from a broken matcher.
+ */
+console.log('\n--- lookalike characters ---');
+check('cyrillic capital I',       matches(['Israel'], 'proud \u0406srael supporter'), true);
+check('cyrillic lowercase o/e/a', matches(['nato'], 'left nat\u043E today'), true);
+check('zero-width joiner inside', matches(['Israel'], 'proud Isra\u200Del supporter'), true);
+check('zero-width space inside',  matches(['crypto'], 'cry\u200Bpto guy'), true);
+check('soft hyphen inside',       matches(['crypto'], 'cry\u00ADpto guy'), true);
+check('mathematical bold',        matches(['Israel'], 'go \u{1D408}\u{1D42C}\u{1D42B}\u{1D41A}\u{1D41E}\u{1D425}'), true);
+check('mixed bold and fraktur',   matches(['Israel'], 'go \u{1D408}\u{1D42C}\u{1D42B}\u{1D41A}\u{1D522}\u{1D529}'), true);
+check('styled run of another word', matches(['Israel'], 'go \u{1D408}\u{1D42B}\u{1D41E}\u{1D425}\u{1D41A}\u{1D427}\u{1D41D}'), false);
+check('fullwidth latin',          matches(['Israel'], 'go \uFF29\uFF53\uFF52\uFF41\uFF45\uFF4C'), true);
+check('greek omicron',            matches(['pro'], 'pr\u03BF life'), true);
+check('accent folded',            matches(['Jose'], 'soy Jos\u00E9'), true);
+check('hashtag plus lookalike',   matches(['Israel'], 'videos #\u0406srael'), true);
+check('unrelated word still misses', matches(['Israel'], 'ireland forever'), false);
+check('folding off, lookalike misses',
+  matches(['Israel'], 'proud \u0406srael supporter', { foldLookalikes: false }), false);
+check('folding off, plain still matches',
+  matches(['Israel'], 'proud Israel supporter', { foldLookalikes: false }), true);
+check('emoji survives folding',   matches(['emoji:latin cross'], 'father \u271D\uFE0F'), true);
+check('flag survives folding',    matches(['flag:UA'], 'Slava \u{1F1FA}\u{1F1E6}'), true);
 
 console.log('\n--- field scoping ---');
 check('flag in name, name field off',     verdict('flagdad', ['flag:US']), 'ok');
