@@ -21,7 +21,8 @@ function slice(startMarker, endMarker) {
 
 const body =
   slice('  var EMOJI_NAMES = {', '  buildMatchers();') + '\n' +
-  slice('  function evaluate(handle, extra) {', '\n    return { state: \'ok\' };\n  }');
+  slice('  function profileValues(u, handle, domName) {', '\n    return { state: \'ok\' };\n  }') + '\n' +
+  slice('  function nearMisses(limit) {', '\n    return out;\n  }');
 
 const cfg = {
   keywords: [], matchMode: 'substring', caseSensitive: false, normalizeEmoji: true,
@@ -29,7 +30,8 @@ const cfg = {
 };
 const users = new Map();
 const api = new Function('cfg', 'users', 'queueLookup', 'stats',
-  body + '; return { buildMatchers, evaluate, matchers: () => matchers, normText, emojiName, codePointsOf, EMOJI_CLUSTER };'
+  body + '; return { buildMatchers, evaluate, nearMisses, matchers: () => matchers, ' +
+    'normText, emojiName, codePointsOf, EMOJI_CLUSTER };'
 )(cfg, users, () => {}, {});
 
 let failures = 0;
@@ -184,6 +186,34 @@ function buildWorld(mode) {
   )(pageWin, contentWin, doc, exportFn, store, st, [], () => {}, () => {}, () => {});
   return { env, store, stats: st, article };
 }
+
+/* ---- near misses: the text is there, the field is off ---- */
+console.log('\n--- near misses ---');
+function nearMiss(keywords, fields) {
+  Object.assign(cfg, {
+    matchMode: 'substring', caseSensitive: false, normalizeEmoji: true,
+    fields: { bio: true, name: false, handle: false, location: false, links: false, professional: false }
+  });
+  Object.assign(cfg.fields, fields || {});
+  cfg.keywords = keywords;
+  api.buildMatchers();
+  return api.nearMisses(25);
+}
+users.set('located', { h: 'located', n: 'Denise', b: 'mom, dog lover', l: 'Israel' });
+users.set('sloganed', { h: 'sloganed', n: 'Ari - Israel forever', b: 'engineer' });
+
+check('location hit is reported as a near miss', nearMiss(['Israel']).length, 2);
+check('the field is named',
+  nearMiss(['Israel']).filter(r => r.handle === '@located').map(r => r.field).join(), 'location');
+check('the display name is named too',
+  nearMiss(['Israel']).filter(r => r.handle === '@sloganed').map(r => r.field).join(), 'name');
+check('enabling the field clears the near miss',
+  nearMiss(['Israel'], { location: true, name: true }).length, 0);
+check('a scoped keyword clears it too', nearMiss(['location:Israel', 'name:Israel']).length, 0);
+check('a real bio match is not a near miss', nearMiss(['dog lover']).length, 0);
+check('no keywords, no near misses', nearMiss([]).length, 0);
+check('near miss carries the offending text',
+  nearMiss(['Israel']).filter(r => r.handle === '@located')[0].text, 'Israel');
 
 console.log('\n--- JS world fallback ---');
 {

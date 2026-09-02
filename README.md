@@ -97,6 +97,27 @@ the reason. Run `xpkbFind("christian")`: it ignores your keyword list and report
 field is being searched. A hashtag in someone's display name is invisible with the
 default settings, which looks exactly like broken matching.
 
+### When a keyword does not fire
+
+Out of the box only the **bio** is searched, and that is the single most common reason a
+correct keyword never matches. A country name usually lives in `location`. A cause, a
+slogan or a flag usually lives in the display name. Neither field is on by default, so
+the text is really there and nothing is looking at it.
+
+The script now says so rather than sitting quiet. If any known profile matches a keyword
+in a field that is switched off, it warns in the console after 15 seconds, names the
+field and the profile, and `xpkbDiag()` carries a `near misses` line with the list.
+`xpkbNearMisses()` prints the lot on demand, and `xpkbFind("israel")` answers the same
+question from the other end: where does this text actually live?
+
+The fix is either to tick the field in settings, which widens every unscoped keyword, or
+to scope that one keyword and leave the rest alone:
+
+```
+location:Israel      # only their location, other keywords unaffected
+name:Israel          # only their display name
+```
+
 ### Field prefixes
 
 By default keywords search the fields ticked in settings (bio only, out of the box).
@@ -156,7 +177,8 @@ Run `xpkbDiag()`, or use the diagnostics menu command.
 | `API payloads seen: 0` | The hook was installed too late. Hard-reload the tab. |
 | `profiles WITH a bio: 0 of N` | The bio is not where the extractor looks. The `raw User object shapes` section of the report shows where X actually put it. |
 | Posts still visible | `xpkbWhy()` prints a row per post on screen: handle, stored bio, display name, and verdict. |
-| A keyword that should obviously match, does not | `xpkbFind("that text")` ignores your keyword list and says which field the text is really in, and whether that field is searched. Most often it is in the display name, which is off by default. |
+| A keyword that should obviously match, does not | `xpkbFind("that text")` ignores your keyword list and says which field the text is really in, and whether that field is searched. Most often it is the display name or the location, both off by default. |
+| `near misses: N profile(s) match in a field that is switched OFF` | Exactly that. `xpkbNearMisses()` lists them. Tick the field, or scope the keyword to it. |
 | Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Expected on Firefox, and handled: page-world injection needs the CSP worked around, which hangs off response headers a cached load never re-delivers. Since 1.5.0 the script runs in the content world instead and reads profiles off React's fibers. `xpkbDiag()` will say `JS world: xray`. To stop the warning entirely, open the script in Violentmonkey, Settings tab, and set "Inject into" to `content`: on Firefox that costs nothing but the pre-render head start. |
 | `JS world: isolated` | Chrome + Violentmonkey with page-world injection refused, and Chrome's content world has no route to page data. Enable **Allow user scripts**, see [The page world](#the-page-world). |
 
@@ -227,7 +249,7 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-86 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+94 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
 sequences, hashtags, field scoping, display-name matching, the three JS worlds, and
 settings persistence. The tests pull the pure sections out of the userscript, so they run without
 a browser. The world cases build a stand-in for each of `page`, `xray` and `isolated` and

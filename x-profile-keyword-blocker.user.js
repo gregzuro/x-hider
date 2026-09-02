@@ -59,8 +59,8 @@
  * Menu commands (Violentmonkey / Tampermonkey toolbar icon):
  *   settings, diagnostics, list emoji in known profiles, clear profile cache
  *
- * Console helpers: xpkbSettings() xpkbDiag() xpkbWhy() xpkbFind() xpkbEmojiScan()
- *                  xpkbEmojiNames() xpkbSample()
+ * Console helpers: xpkbSettings() xpkbDiag() xpkbWhy() xpkbFind() xpkbNearMisses()
+ *                  xpkbEmojiScan() xpkbEmojiNames() xpkbSample()
  *
  * Data: profiles seen are cached locally via GM storage (2500 entries max) so
  * filtering works immediately on reload. Nothing is sent anywhere. The optional
@@ -1019,6 +1019,17 @@
     location: 'location', links: 'link', professional: 'category'
   };
 
+  function profileValues(u, handle, domName) {
+    return {
+      bio: [u.b],
+      name: [u.n, domName],
+      handle: [u.h || handle],
+      location: [u.l],
+      links: [u.u],
+      professional: [u.p]
+    };
+  }
+
   function evaluate(handle, extra) {
     if (!handle) return { state: 'ok' };
     if (!matchers.length) return { state: 'ok' };
@@ -1027,14 +1038,7 @@
     if (!u && !domName) { queueLookup(handle); return { state: 'unknown' }; }
     u = u || {};
 
-    var values = {
-      bio: [u.b],
-      name: [u.n, domName],
-      handle: [u.h || handle],
-      location: [u.l],
-      links: [u.u],
-      professional: [u.p]
-    };
+    var values = profileValues(u, handle, domName);
 
     var anyValue = false;
     for (var field in values) {
@@ -1061,6 +1065,45 @@
     // silently whitelists an account forever.
     if (!anyValue) { queueLookup(handle); return { state: 'unknown' }; }
     return { state: 'ok' };
+  }
+
+  // Which profiles WOULD match if a field that is currently switched off were
+  // switched on. By far the most common reason a correct keyword never fires:
+  // the text is really there, it is just somewhere nobody is looking. A country
+  // name sits in "location", a cause or a slogan sits in the display name, and
+  // both of those fields are off out of the box.
+  function nearMisses(limit) {
+    var out = [];
+    if (!matchers.length) return out;
+    var cap = limit || 25;
+    users.forEach(function (u, k) {
+      if (out.length >= cap) return;
+      if (evaluate(k, null).state === 'match') return;      // already caught
+      var values = profileValues(u, k, '');
+      for (var field in values) {
+        if (fieldsInUse[field]) continue;                   // already searched
+        var vals = values[field];
+        for (var i = 0; i < vals.length; i++) {
+          if (!vals[i]) continue;
+          var hay = normText(vals[i]);
+          for (var j = 0; j < matchers.length; j++) {
+            var m = matchers[j];
+            if (m.field && m.field !== '*' && m.field !== field) continue;
+            m.re.lastIndex = 0;
+            if (m.re.test(hay)) {
+              out.push({
+                handle: '@' + k,
+                keyword: m.raw,
+                field: field,
+                text: vals[i].replace(/\s+/g, ' ').slice(0, 60)
+              });
+              return;
+            }
+          }
+        }
+      }
+    });
+    return out;
   }
 
   /* ------------------------------------------------------------------ *
@@ -1546,6 +1589,9 @@
   }
 
   function diagReport() {
+    var nm = nearMisses(25);
+    var nmFields = [];
+    nm.forEach(function (r) { if (nmFields.indexOf(r.field) === -1) nmFields.push(r.field); });
     var withBio = 0;
     var samples = [];
     users.forEach(function (u, k) {
@@ -1585,11 +1631,25 @@
       'fields             : ' + Object.keys(cfg.fields).filter(function (k) { return cfg.fields[k]; }).join(', '),
       'action             : ' + cfg.action,
       '',
+      'near misses        : ' + (nm.length
+        ? nm.length + ' profile(s) match in a field that is switched OFF -> ' +
+          nmFields.join(', ')
+        : 'none'),
+      '',
       'sample unknown authors: ' + (unknownHandles.length ? unknownHandles.join(', ') : '(none)'),
       '',
       'sample stored bios:',
       samples.length ? '  ' + samples.join('\n  ') : '  (none - no profile has a bio stored)',
       '',
+      nm.length
+        ? 'profiles that would match if you widened the fields:\n' +
+          nm.slice(0, 6).map(function (r) {
+            return '  ' + r.handle + '  "' + r.keyword + '" is in their ' + r.field +
+              ': ' + r.text;
+          }).join('\n') +
+          '\n  Tick "' + nmFields.join('", "') + '" in settings, or scope a keyword, ' +
+          'e.g. ' + nmFields[0] + ':<keyword>\n'
+        : '',
       'raw User object shapes seen this session:',
       shapeSamples.length
         ? shapeSamples.map(function (x) {
@@ -1764,6 +1824,26 @@
     );
   }, 12000);
 
+  // Separate from the "nothing works" check above, and deliberately not gated on
+  // it: the script can be working perfectly and still never hide anything,
+  // because every keyword is aimed at a field that is switched off.
+  setTimeout(function () {
+    if (!matchers.length) return;
+    var nm = nearMisses(25);
+    if (!nm.length) return;
+    var fields = [];
+    nm.forEach(function (r) { if (fields.indexOf(r.field) === -1) fields.push(r.field); });
+    console.warn(
+      '[xpkb] ' + nm.length + ' profile(s) match your keywords in a field that is switched OFF' +
+      (hiddenCount ? '' : ', and nothing has been hidden this session') + '.\n' +
+      'The text is there, it is just not being searched. Example: ' + nm[0].handle +
+      ' has "' + nm[0].keyword + '" in their ' + nm[0].field + '.\n' +
+      'Tick "' + fields.join('", "') + '" in settings, or scope a keyword to it, ' +
+      'e.g. ' + nm[0].field + ':' + nm[0].keyword + '\n' +
+      'Run xpkbDiag() for the full list.'
+    );
+  }, 15000);
+
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('Profile Keyword Blocker: settings', openSettings);
     GM_registerMenuCommand('Profile Keyword Blocker: diagnostics', openDiagnostics);
@@ -1813,6 +1893,12 @@
     W.xpkbEmojiScan = toPage(emojiScan);
     // xpkbFind("christian") - which field is that text actually in?
     W.xpkbFind = toPage(function (needle) { return findText(needle); });
+    // xpkbNearMisses() - who would match if the disabled fields were on?
+    W.xpkbNearMisses = toPage(function () {
+      var rows = nearMisses(200);
+      if (console.table) console.table(rows); else console.log(rows);
+      return rows.length;
+    });
     W.xpkbEmojiNames = toPage(function () {
       var rows = Object.keys(EMOJI_NAMES).sort().map(function (n) {
         return { name: n, emoji: EMOJI_NAMES[n], keyword: 'emoji:' + n };
