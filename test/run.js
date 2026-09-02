@@ -74,6 +74,8 @@ users.set('flagdad', { h: 'flagdad', n: 'Mike 🇺🇸🦅', b: 'dad, coach, vet
 users.set('christo', { h: 'christo', n: 'Christian Bale', b: 'actor' });
 users.set('bioflag', { h: 'bioflag', n: 'Anna', b: 'Kyiv 🇺🇦 journalist' });
 users.set('stub',    { h: 'stub' });
+users.set('hashbio', { h: 'hashbio', n: 'Dan', b: 'dad. #Christian. texas.' });
+users.set('hashname',{ h: 'hashname', n: 'Dan #Christian', b: 'dad from texas' });
 
 function verdict(handle, keywords, fields, domName) {
   cfg.keywords = keywords;
@@ -115,6 +117,21 @@ check('unknown handle stays unknown',     verdict('ghost2', ['flag:US']), 'unkno
 check('emoji group scoped to name',       verdict('flagdad', ['name:emoji:eagle']), 'match');
 check('any: prefix searches every field', verdict('bioflag', ['any:flag:UA']), 'match');
 check('blank profile is unknown, not ok', verdict('stub', ['crypto']), 'unknown');
+
+/*
+ * The whole path, not just the regex: a hashtag in the BIO matches with the
+ * default fields, and the identical hashtag in the DISPLAY NAME does not,
+ * because the name field is off out of the box. Same keyword, same text,
+ * opposite results - which is the failure that looks like broken matching.
+ */
+console.log('\n--- hashtag, end to end through evaluate() ---');
+check('hashtag in bio, bare keyword',      verdict('hashbio', ['Christian']), 'match');
+check('hashtag in bio, hashed keyword',    verdict('hashbio', ['#Christian']), 'match');
+check('hashtag in bio, word mode',         verdict('hashbio', ['Christian'], { matchMode: 'word' }), 'match');
+check('hashtag in NAME is missed by default', verdict('hashname', ['Christian']), 'ok');
+check('hashtag in name, name field on',    verdict('hashname', ['Christian'], { name: true }), 'match');
+check('hashtag in name, scoped keyword',   verdict('hashname', ['name:Christian']), 'match');
+check('hashtag in name, scoped and hashed',verdict('hashname', ['name:#Christian']), 'match');
 
 /* ---- world detection and the Firefox Xray fallback ---- */
 /*

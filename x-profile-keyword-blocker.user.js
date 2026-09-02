@@ -59,7 +59,7 @@
  * Menu commands (Violentmonkey / Tampermonkey toolbar icon):
  *   settings, diagnostics, list emoji in known profiles, clear profile cache
  *
- * Console helpers: xpkbSettings() xpkbDiag() xpkbWhy() xpkbEmojiScan()
+ * Console helpers: xpkbSettings() xpkbDiag() xpkbWhy() xpkbFind() xpkbEmojiScan()
  *                  xpkbEmojiNames() xpkbSample()
  *
  * Data: profiles seen are cached locally via GM storage (2500 entries max) so
@@ -1647,6 +1647,63 @@
     return rows;
   }
 
+  // Answers "why did that profile not match?" by ignoring the keyword list
+  // entirely and asking a blunter question: where does this text actually live?
+  // A keyword can be correct and still never fire because the text is in a
+  // field that is not being searched, or because the profile was never learned.
+  var FIND_FIELDS = ['bio', 'name', 'handle', 'location', 'links', 'professional'];
+
+  function findText(needle) {
+    var q = normText(String(needle == null ? '' : needle)).toLowerCase();
+    if (!q) {
+      console.warn('[xpkb] usage: xpkbFind("christian")');
+      return 0;
+    }
+
+    var rows = [];
+    var perField = {};
+    FIND_FIELDS.forEach(function (f) { perField[f] = 0; });
+
+    users.forEach(function (u, k) {
+      var vals = {
+        bio: u.b || '', name: u.n || '', handle: u.h || k,
+        location: u.l || '', links: u.u || '', professional: u.p || ''
+      };
+      var hits = FIND_FIELDS.filter(function (f) {
+        return normText(vals[f]).toLowerCase().indexOf(q) !== -1;
+      });
+      if (!hits.length) return;
+      hits.forEach(function (f) { perField[f]++; });
+      var searched = hits.filter(function (f) { return fieldsInUse[f]; });
+      rows.push({
+        handle: '@' + k,
+        found_in: hits.join(' '),
+        being_searched: searched.length ? searched.join(' ') : 'NO',
+        verdict: evaluate(k, null).state,
+        text: vals[hits[0]].replace(/\s+/g, ' ').slice(0, 60)
+      });
+    });
+
+    if (!rows.length) {
+      console.log('[xpkb] "' + needle + '" is not in any of the ' + users.size +
+        ' profiles known here. Either nobody on screen has it, or their profiles were\n' +
+        '       never learned - check the WORKING line in xpkbDiag().');
+      return 0;
+    }
+
+    if (console.table) console.table(rows); else console.log(rows);
+    console.log('[xpkb] "' + needle + '" found in ' + rows.length + ' of ' + users.size + ' profiles: ' +
+      FIND_FIELDS.filter(function (f) { return perField[f]; })
+        .map(function (f) { return f + ' ' + perField[f] + (fieldsInUse[f] ? '' : ' (NOT SEARCHED)'); })
+        .join(', '));
+    var missed = FIND_FIELDS.filter(function (f) { return perField[f] && !fieldsInUse[f]; });
+    if (missed.length) {
+      console.log('[xpkb] tick "' + missed.join('", "') + '" in settings, or scope a keyword to it, ' +
+        'e.g. ' + missed[0] + ':' + needle);
+    }
+    return rows.length;
+  }
+
   function openDiagnostics() {
     var text = diagReport();
     console.log('[xpkb]\n' + text);
@@ -1714,6 +1771,10 @@
       emojiScan();
       console.log('[xpkb] table printed above. Copy a value from the "keyword" column into your keyword list.');
     });
+    GM_registerMenuCommand('Profile Keyword Blocker: find text in known profiles', function () {
+      var needle = prompt('Text to look for across every profile learned so far:');
+      if (needle) findText(needle);
+    });
     GM_registerMenuCommand('Profile Keyword Blocker: clear profile cache', function () {
       users.clear();
       store.set('cache', {});
@@ -1750,6 +1811,8 @@
     });
     W.xpkbSample = toPage(function () { console.log(shapeSamples); return toPageValue(shapeSamples); });
     W.xpkbEmojiScan = toPage(emojiScan);
+    // xpkbFind("christian") - which field is that text actually in?
+    W.xpkbFind = toPage(function (needle) { return findText(needle); });
     W.xpkbEmojiNames = toPage(function () {
       var rows = Object.keys(EMOJI_NAMES).sort().map(function (n) {
         return { name: n, emoji: EMOJI_NAMES[n], keyword: 'emoji:' + n };

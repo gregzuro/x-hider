@@ -91,6 +91,12 @@ Word mode still refuses a substring, so `#Christian` does not match `unChristian
 mode is you being explicit and leaves `#` exactly as written, which is where to go if you
 want the hashtag form and nothing else.
 
+If a keyword you expect to hit a hashtag is not hitting it, the matcher is usually not
+the reason. Run `xpkbFind("christian")`: it ignores your keyword list and reports which
+*field* that text is actually in across every profile learned so far, and whether that
+field is being searched. A hashtag in someone's display name is invisible with the
+default settings, which looks exactly like broken matching.
+
 ### Field prefixes
 
 By default keywords search the fields ticked in settings (bio only, out of the box).
@@ -150,6 +156,7 @@ Run `xpkbDiag()`, or use the diagnostics menu command.
 | `API payloads seen: 0` | The hook was installed too late. Hard-reload the tab. |
 | `profiles WITH a bio: 0 of N` | The bio is not where the extractor looks. The `raw User object shapes` section of the report shows where X actually put it. |
 | Posts still visible | `xpkbWhy()` prints a row per post on screen: handle, stored bio, display name, and verdict. |
+| A keyword that should obviously match, does not | `xpkbFind("that text")` ignores your keyword list and says which field the text is really in, and whether that field is searched. Most often it is in the display name, which is off by default. |
 | Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Expected on Firefox, and handled: page-world injection needs the CSP worked around, which hangs off response headers a cached load never re-delivers. Since 1.5.0 the script runs in the content world instead and reads profiles off React's fibers. `xpkbDiag()` will say `JS world: xray`. To stop the warning entirely, open the script in Violentmonkey, Settings tab, and set "Inject into" to `content`: on Firefox that costs nothing but the pre-render head start. |
 | `JS world: isolated` | Chrome + Violentmonkey with page-world injection refused, and Chrome's content world has no route to page data. Enable **Allow user scripts**, see [The page world](#the-page-world). |
 
@@ -220,7 +227,7 @@ it has observed one such request to learn the endpoint.
 node test/run.js
 ```
 
-79 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
+86 cases covering keyword compilation, emoji normalization, groups, flags, ZWJ
 sequences, hashtags, field scoping, display-name matching, the three JS worlds, and
 settings persistence. The tests pull the pure sections out of the userscript, so they run without
 a browser. The world cases build a stand-in for each of `page`, `xray` and `isolated` and
