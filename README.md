@@ -32,14 +32,17 @@ Display names are additionally read straight off the page, since those are rende
 x.com's CSP sends a `script-src` nonce, which makes the browser ignore the
 `'unsafe-inline'` sitting next to it in the same header. So nothing can drop a plain
 `<script>` into x.com's own JS world, and that world is where the network hook wants to
-be. Getting there is browser-specific and can fail, so the script does not insist: it
-declares `@inject-into auto`, works out which world it actually landed in, and adapts.
-`xpkbDiag()` reports which one on the `JS world` line.
+be. Getting there is browser-specific and can fail.
+
+The script declares `@inject-into page`, because that is the only configuration confirmed
+to work end to end. It still works out which world it actually landed in and adapts, so
+the fallbacks are live if your manager puts it somewhere else. `xpkbDiag()` reports which
+one on the `JS world` line.
 
 | World | When | What works |
 | --- | --- | --- |
 | `page` | Tampermonkey anywhere; Violentmonkey when injection succeeds | Everything: network hook plus React props |
-| `xray` | Firefox + Violentmonkey, injection refused | React props, plus the network hook via `exportFunction` |
+| `xray` | Firefox + Violentmonkey, content world. Set "Inject into" to `content` per-script to try it | React props, plus the network hook via `exportFunction`. **Not yet confirmed against a live timeline** |
 | `isolated` | Chrome + Violentmonkey, injection refused | Only profiles already in the local cache. Enable the toggle below |
 
 **Chrome:** if diagnostics say `isolated`, go to `chrome://extensions`, open
@@ -49,12 +52,14 @@ Violentmonkey use Chrome's `userScripts` API. Restart the browser after flipping
 
 **Firefox:** Violentmonkey's CSP workaround depends on seeing the document's response
 headers, and a page served from cache never delivers them again, so soft reloads and
-reopened tabs land in the content world. Firefox is generous there in a way Chrome is
-not: `unsafeWindow` is a real handle on the page window and DOM nodes expose
+reopened tabs cannot be injected into the page. Firefox is generous in its content world
+in a way Chrome is not: `unsafeWindow` is a real handle on the page window and DOM nodes expose
 `.wrappedJSObject`, so the script reads author profiles straight off React's fibers on
 the rendered posts, and re-exports its `fetch` wrapper through `exportFunction`. It
-keeps working; profiles are just learned as posts render rather than as responses
-arrive, so a post can occasionally appear for a frame before it is hidden.
+In principle it keeps working, with profiles learned as posts render rather than as
+responses arrive. In practice this path has only been exercised against a stand-in, not a
+live timeline, which is why `page` is still what ships. To try it, set "Inject into" to
+`content` for the script in Violentmonkey and check `xpkbDiag()`.
 
 Open settings from the extension's toolbar menu ("Profile Keyword Blocker: settings"),
 or run `xpkbSettings()` in the console.

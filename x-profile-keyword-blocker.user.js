@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Profile Keyword Blocker
 // @namespace    https://github.com/gregzuro/x-hider
-// @version      1.5.0
+// @version      1.6.0
 // @description  Hide posts on x.com from accounts whose profile matches your keywords - bio, display name, location, link or emoji.
 // @author       Greg Zuro
 // @license      MIT
@@ -20,7 +20,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @grant        unsafeWindow
-// @inject-into  auto
+// @inject-into  page
 // @noframes
 // ==/UserScript==
 
@@ -43,8 +43,11 @@
  * the document's response headers, which a cached load - soft reload, reopened
  * tab - never delivers again. Tampermonkey depends on neither.
  *
- * So the script does not insist. "@inject-into auto" lets the manager put it
- * wherever it can, and the script works out which world it landed in:
+ * "@inject-into page" asks for the page world, because that is the only
+ * configuration confirmed to work end to end. The script still works out which
+ * world it actually landed in, so the fallbacks below are live if a manager
+ * puts it somewhere else - set "Inject into" to "content" per-script in
+ * Violentmonkey to try the Firefox fallback deliberately:
  *
  *   page     everything works, as described above.
  *   xray     Firefox content world. unsafeWindow is a waived wrapper on the
