@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Profile Keyword Blocker
 // @namespace    https://github.com/gregzuro/x-hider
-// @version      1.7.0
+// @version      1.8.3
 // @description  Hide posts on x.com from accounts whose profile matches your keywords - bio, display name, location, link or emoji.
 // @author       Greg Zuro
 // @license      MIT
@@ -20,7 +20,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @grant        unsafeWindow
-// @inject-into  page
+// @inject-into  auto
 // @noframes
 // ==/UserScript==
 
@@ -43,11 +43,17 @@
  * the document's response headers, which a cached load - soft reload, reopened
  * tab - never delivers again. Tampermonkey depends on neither.
  *
- * "@inject-into page" asks for the page world, because that is the only
- * configuration confirmed to work end to end. The script still works out which
- * world it actually landed in, so the fallbacks below are live if a manager
- * puts it somewhere else - set "Inject into" to "content" per-script in
- * Violentmonkey to try the Firefox fallback deliberately:
+ * "@inject-into auto" asks for the page world and accepts the content world
+ * when the manager cannot get there. On Firefox that is not a preference, it is
+ * the only way to run at all on a cached load: relaxing the CSP needs a real
+ * response to rewrite, so a soft reload or a reopened tab can never be injected
+ * into the page. This holds for Tampermonkey as much as Violentmonkey - the
+ * limit is the browser's, not the manager's.
+ *
+ * 1.5.0 shipped "auto" and had to be reverted, because a refused
+ * exportFunction() used to leave an unexported function on window.fetch and
+ * broke x.com outright. That is fixed in toPage(), so the worst case here is
+ * now a missing network hook. The script works out which world it landed in:
  *
  *   page     everything works, as described above.
  *   xray     Firefox content world. unsafeWindow is a waived wrapper on the
@@ -94,11 +100,38 @@
     xrayOK = W !== window && typeof exportFunction === 'function';
   } catch (e) { xrayOK = false; }
 
+  // The object the page itself reads its globals off.
+  //
+  // unsafeWindow is NOT reliably that object. In Violentmonkey's content mode a
+  // write to it lands on a sandbox the page never looks at, so the network hook
+  // could report "installed: yes" and still see zero payloads, and console
+  // helpers assigned there were invisible from the page's console. In a content
+  // world `window` is the Xray view of the page global and `.wrappedJSObject`
+  // waives it to the real one. In the page world there is no wrapper and this is
+  // just W, so one name covers both.
+  var PW = W;
+  try { if (window.wrappedJSObject) PW = window.wrappedJSObject; } catch (e) { /* not Firefox */ }
+
   // Firefox refuses to let page code call a content-world function unless it
   // has been exported. Identity everywhere else, so one code path covers both.
+  //
+  // A refused export returns null, never the raw function. Handing an
+  // unexported content-world function to the page is worse than not installing
+  // at all: page code that reads so much as .length off one - which is exactly
+  // what a library wrapping fetch does, to preserve arity - throws "Permission
+  // denied to access property", and that breaks x.com itself rather than just
+  // this script. Callers must skip the install instead.
+  var exportFailed = '';
   function toPage(fn) {
     if (!xrayOK) return fn;
-    try { return exportFunction(fn, W); } catch (e) { return fn; }
+    try {
+      var f = exportFunction(fn, PW);
+      if (typeof f === 'function') return f;
+    } catch (e) {
+      if (!exportFailed) exportFailed = (e && e.message) || 'refused';
+    }
+    if (!exportFailed) exportFailed = 'exportFunction returned a non-function';
+    return null;
   }
 
   // The waived view of a DOM node, which is where React hangs its __reactFiber$
@@ -765,11 +798,11 @@
   // each promise/event callback handed back to page objects - goes through
   // toPage(). In the page world that is a no-op; in Firefox's content world it
   // is what makes the hook legal at all.
-  var origFetch = W.fetch;
+  var origFetch = PW.fetch;
   var fetchHooked = false;
   if (typeof origFetch === 'function') {
     try {
-      W.fetch = toPage(function (input, init) {
+      var fetchHook = toPage(function (input, init) {
         var url = '';
         try {
           url = typeof input === 'string' ? input : (input && input.url) || '';
@@ -778,7 +811,14 @@
           rememberEndpoint(url);
         } catch (e) { /* ignore */ }
 
-        var result = origFetch.apply(this || W, arguments);
+        // Never hand page code a content-world `arguments` object. The page is
+        // not allowed to read our objects, and the first thing apply() does is
+        // ask for its .length - which surfaces as x.com throwing "Permission
+        // denied to access property length" and never loading. Forward the
+        // values discretely instead; each one already came from the page.
+        var result = arguments.length > 1
+          ? origFetch.call(this || PW, input, init)
+          : origFetch.call(this || PW, input);
         try {
           if (isApiUrl(url) && result && typeof result.then === 'function') {
             result.then(toPage(function (res) {
@@ -791,29 +831,40 @@
         } catch (e) { /* ignore */ }
         return result;
       });
-      fetchHooked = true;
+      if (fetchHook) {
+        PW.fetch = fetchHook;
+        fetchHooked = true;
+      }
     } catch (e) { log('fetch hook refused', e && e.message); }
   }
 
   var xhrHooked = false;
   try {
-    var XHR = W.XMLHttpRequest;
+    var XHR = PW.XMLHttpRequest;
     if (XHR && XHR.prototype) {
       var origOpen = XHR.prototype.open;
       var origSend = XHR.prototype.send;
       var origSetHeader = XHR.prototype.setRequestHeader;
 
-      XHR.prototype.open = toPage(function (method, url) {
+      // Same reason as the fetch hook: no content-world arguments object crosses
+      // into page code. open() takes up to five, so forward exactly as many as
+      // came in rather than padding with undefined.
+      var openHook = toPage(function (method, url, async, user, password) {
         try { this.__xpkbUrl = String(url); rememberEndpoint(String(url)); } catch (e) { /* ignore */ }
-        return origOpen.apply(this, arguments);
+        switch (arguments.length) {
+          case 3: return origOpen.call(this, method, url, async);
+          case 4: return origOpen.call(this, method, url, async, user);
+          case 5: return origOpen.call(this, method, url, async, user, password);
+          default: return origOpen.call(this, method, url);
+        }
       });
-      XHR.prototype.setRequestHeader = toPage(function (k, v) {
+      var headerHook = toPage(function (k, v) {
         try {
           var h = {}; h[k] = v; rememberHeaders(h);
         } catch (e) { /* ignore */ }
-        return origSetHeader.apply(this, arguments);
+        return origSetHeader.call(this, k, v);
       });
-      XHR.prototype.send = toPage(function () {
+      var sendHook = toPage(function (body) {
         try {
           if (isApiUrl(this.__xpkbUrl || '')) {
             this.addEventListener('load', toPage(function () {
@@ -824,9 +875,16 @@
             }));
           }
         } catch (e) { /* ignore */ }
-        return origSend.apply(this, arguments);
+        return arguments.length ? origSend.call(this, body) : origSend.call(this);
       });
-      xhrHooked = true;
+      // All or nothing: a half-hooked XMLHttpRequest prototype is worse than an
+      // unhooked one.
+      if (openHook && headerHook && sendHook) {
+        XHR.prototype.open = openHook;
+        XHR.prototype.setRequestHeader = headerHook;
+        XHR.prototype.send = sendHook;
+        xhrHooked = true;
+      }
     }
   } catch (e) { log('xhr hook refused', e && e.message); }
 
@@ -867,9 +925,17 @@
     } catch (e) { done(); return; }
 
     var headers = Object.assign({}, apiCreds.headers, { 'content-type': 'application/json' });
-    var f = origFetch || W.fetch;
+    var f = origFetch || PW.fetch;
+    // The init object is ours, and page code cannot read our objects, so it has
+    // to be cloned across before fetch sees it. Same class of bug as passing a
+    // content-world `arguments` into apply().
+    var init = { credentials: 'include', headers: headers };
+    if (xrayOK) {
+      init = toPageValue(init);
+      if (!init) { done(); return; }
+    }
     try {
-      f.call(W, url.toString(), { credentials: 'include', headers: headers })
+      f.call(PW, url.toString(), init)
         .then(toPage(function (r) { return r.text(); }))
         .then(toPage(function (t) { scanPayload(t); log('looked up', handle); }))
         .catch(toPage(function (e) { log('lookup failed', handle, e && e.message); }))
@@ -1971,53 +2037,118 @@
   }
 
   // Escape hatch if the manager menu is unavailable: run xpkbSettings() in the console.
-  try {
-    W.xpkbSettings = toPage(openSettings);
-    W.xpkbDiag = toPage(function () { console.log('[xpkb]\n' + diagReport()); return toPageValue(stats); });
-    // Per-post breakdown of what the script knows about everything on screen.
-    W.xpkbWhy = toPage(function () {
-      var rows = [];
-      var arts = document.querySelectorAll('article');
-      for (var i = 0; i < arts.length; i++) {
-        var h = authorOf(arts[i]);
-        if (!h) continue;
-        var u = users.get(h) || {};
-        var dn = domDisplayName(arts[i]);
-        rows.push({
-          handle: '@' + h,
-          known: users.has(h),
-          bio: (u.b || '').replace(/\s+/g, ' ').slice(0, 80),
-          name: u.n || dn,
-          nameFromPage: dn,
-          verdict: evaluate(h, { name: dn }).state
-        });
+  //
+  // Each helper goes on independently. This used to be one try around the whole
+  // block, so a single refused assignment silently took every later helper with
+  // it - indistinguishable, from the console, from the script never running.
+  var exposeErr = '';
+  var exposedOn = 0;
+  // Which object is really the page's global depends on the manager. In a content
+  // world `window` is the Xray view and `.wrappedJSObject` waives it to the real
+  // one; unsafeWindow is usually that same waived object, but not in every
+  // manager. Collect every distinct candidate and define on all of them - a
+  // duplicate definition costs nothing, a missed one costs the console helpers.
+  var pageGlobals = [];
+  function addGlobal(o) {
+    if (!o || typeof o !== 'object') return;
+    for (var i = 0; i < pageGlobals.length; i++) if (pageGlobals[i] === o) return;
+    pageGlobals.push(o);
+  }
+  addGlobal(PW);
+  addGlobal(W);
+  try { addGlobal(window.wrappedJSObject); } catch (e) { /* not Firefox */ }
+  try { addGlobal(W.wrappedJSObject); } catch (e) { /* already waived */ }
+
+  function expose(name, fn) {
+    var landed = 0;
+    for (var i = 0; i < pageGlobals.length; i++) {
+      try {
+        if (xrayOK) {
+          // defineAs is the documented way to put a function on another
+          // compartment's global. Plain assignment through a wrapper can land on
+          // a sandbox the page cannot see, which is what made the old check lie.
+          exportFunction(fn, pageGlobals[i], { defineAs: name });
+        } else {
+          pageGlobals[i][name] = fn;
+        }
+        landed++;
+      } catch (e) {
+        if (!exposeErr) exposeErr = name + ': ' + ((e && e.message) || 'refused');
       }
-      if (console.table) console.table(rows); else console.log(rows);
-      return rows.length;
-    });
-    W.xpkbSample = toPage(function () { console.log(shapeSamples); return toPageValue(shapeSamples); });
-    W.xpkbEmojiScan = toPage(emojiScan);
-    // xpkbFind("christian") - which field is that text actually in?
-    W.xpkbFind = toPage(function (needle) { return findText(needle); });
-    // xpkbNearMisses() - who would match if the disabled fields were on?
-    // xpkbExplain("DeniseInCanada") - the whole decision for one account
-    W.xpkbExplain = toPage(function (handle) { return explain(handle); });
-    W.xpkbNearMisses = toPage(function () {
-      var rows = nearMisses(200);
-      if (console.table) console.table(rows); else console.log(rows);
-      return rows.length;
-    });
-    W.xpkbEmojiNames = toPage(function () {
-      var rows = Object.keys(EMOJI_NAMES).sort().map(function (n) {
-        return { name: n, emoji: EMOJI_NAMES[n], keyword: 'emoji:' + n };
+    }
+    if (!landed && !exposeErr) exposeErr = name + ': no reachable global';
+    exposedOn = landed;
+    // Also keep an unexported copy on our own global, for the manager's console.
+    try { if (window !== W) window[name] = fn; } catch (e) { /* ignore */ }
+  }
+
+  expose('xpkbSettings', openSettings);
+  expose('xpkbDiag', function () { console.log('[xpkb]\n' + diagReport()); return toPageValue(stats); });
+  // Per-post breakdown of what the script knows about everything on screen.
+  expose('xpkbWhy', function () {
+    var rows = [];
+    var arts = document.querySelectorAll('article');
+    for (var i = 0; i < arts.length; i++) {
+      var h = authorOf(arts[i]);
+      if (!h) continue;
+      var u = users.get(h) || {};
+      var dn = domDisplayName(arts[i]);
+      rows.push({
+        handle: '@' + h,
+        known: users.has(h),
+        bio: (u.b || '').replace(/\s+/g, ' ').slice(0, 80),
+        name: u.n || dn,
+        nameFromPage: dn,
+        verdict: evaluate(h, { name: dn }).state
       });
-      var groups = Object.keys(EMOJI_GROUPS).map(function (g) {
-        return { name: g + ' (group)', emoji: EMOJI_GROUPS[g].join(' '), keyword: 'emoji:' + g };
-      });
-      rows = groups.concat(rows);
-      if (console.table) console.table(rows); else console.log(rows);
-      return rows.length;
+    }
+    if (console.table) console.table(rows); else console.log(rows);
+    return rows.length;
+  });
+  expose('xpkbSample', function () { console.log(shapeSamples); return toPageValue(shapeSamples); });
+  expose('xpkbEmojiScan', emojiScan);
+  // xpkbFind("christian") - which field is that text actually in?
+  expose('xpkbFind', function (needle) { return findText(needle); });
+  // xpkbNearMisses() - who would match if the disabled fields were on?
+  // xpkbExplain("DeniseInCanada") - the whole decision for one account
+  expose('xpkbExplain', function (handle) { return explain(handle); });
+  expose('xpkbNearMisses', function () {
+    var rows = nearMisses(200);
+    if (console.table) console.table(rows); else console.log(rows);
+    return rows.length;
+  });
+  expose('xpkbEmojiNames', function () {
+    var rows = Object.keys(EMOJI_NAMES).sort().map(function (n) {
+      return { name: n, emoji: EMOJI_NAMES[n], keyword: 'emoji:' + n };
     });
+    var groups = Object.keys(EMOJI_GROUPS).map(function (g) {
+      return { name: g + ' (group)', emoji: EMOJI_GROUPS[g].join(' '), keyword: 'emoji:' + g };
+    });
+    rows = groups.concat(rows);
+    if (console.table) console.table(rows); else console.log(rows);
+    return rows.length;
+  });
+
+  // Deliberately not "is it on the page window", which cannot be answered from
+  // in here: reading a property back off the object we just wrote to proves
+  // nothing about whether the page shares that object. Report what we did.
+  var helpersOnPage = exposedOn > 0;
+
+  // One unconditional line. The script's worst failure mode is not being injected
+  // at all, and until now that was indistinguishable from running fine with
+  // nothing to say, because log() is gated on a debug flag that defaults off.
+  try {
+    console.log(
+      '[xpkb] ' + VERSION + ' loaded | unsafeWindow differs from window: ' + (W !== window) +
+      ' | exportFunction: ' + (typeof exportFunction === 'function') +
+      ' | xray: ' + xrayOK +
+      ' | network hook: ' + (fetchHooked ? 'fetch' : 'none') + (xhrHooked ? '+xhr' : '') +
+      (exportFailed ? ' | exportFunction FAILED: ' + exportFailed : '') +
+      ' | console helpers: ' + (helpersOnPage
+        ? 'defined on ' + exposedOn + ' global(s)'
+        : 'NONE' + (exposeErr ? ' (' + exposeErr + ')' : '')) +
+      ' | toolbar menu > diagnostics always works'
+    );
   } catch (e) { /* ignore */ }
 
   log('ready', cfg);

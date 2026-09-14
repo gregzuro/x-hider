@@ -34,15 +34,15 @@ x.com's CSP sends a `script-src` nonce, which makes the browser ignore the
 `<script>` into x.com's own JS world, and that world is where the network hook wants to
 be. Getting there is browser-specific and can fail.
 
-The script declares `@inject-into page`, because that is the only configuration confirmed
-to work end to end. It still works out which world it actually landed in and adapts, so
-the fallbacks are live if your manager puts it somewhere else. `xpkbDiag()` reports which
-one on the `JS world` line.
+The script declares `@inject-into auto`: it asks for the page world and accepts the
+content world when the manager cannot get there. It works out which world it landed in
+and adapts. `xpkbDiag()` reports which one on the `JS world` line, and the line the script
+logs on load says so too.
 
 | World | When | What works |
 | --- | --- | --- |
-| `page` | Tampermonkey anywhere; Violentmonkey when injection succeeds | Everything: network hook plus React props |
-| `xray` | Firefox + Violentmonkey, content world. Set "Inject into" to `content` per-script to try it | React props, plus the network hook via `exportFunction`. **Not yet confirmed against a live timeline** |
+| `page` | Any manager, on a load that hit the network | Everything: network hook plus React props |
+| `xray` | Firefox content world: what any manager falls back to on a cached load | React props, confirmed to filter a live timeline on its own. The network hook is installed only if `exportFunction` accepts it, and skipped otherwise - see below |
 | `isolated` | Chrome + Violentmonkey, injection refused | Only profiles already in the local cache. Enable the toggle below |
 
 **Chrome:** if diagnostics say `isolated`, go to `chrome://extensions`, open
@@ -50,16 +50,48 @@ Violentmonkey's *Details*, and enable **Allow user scripts** (on Chrome older th
 turn on *Developer mode* at the top right of the same page instead). That is what lets
 Violentmonkey use Chrome's `userScripts` API. Restart the browser after flipping it.
 
-**Firefox:** Violentmonkey's CSP workaround depends on seeing the document's response
-headers, and a page served from cache never delivers them again, so soft reloads and
-reopened tabs cannot be injected into the page. Firefox is generous in its content world
-in a way Chrome is not: `unsafeWindow` is a real handle on the page window and DOM nodes expose
-`.wrappedJSObject`, so the script reads author profiles straight off React's fibers on
-the rendered posts, and re-exports its `fetch` wrapper through `exportFunction`. It
+**Firefox:** getting into the page world on x.com means relaxing its CSP, and a manager
+can only do that by rewriting the document's response headers. A page served from cache
+never delivers them again, so a soft reload, a reopened tab or a back/forward cannot be
+injected into the page. **This is a browser limit, not a Violentmonkey one: Tampermonkey
+behaves the same way.** What you see is the manager's inline `<script>` being refused,
+logged against its own extension UUID:
+
+```
+Content-Security-Policy: The page's settings blocked an inline script (script-src-elem)
+  a2d0e484-91db-41e1-9c40-b7f40fd3d5fa:19:51
+```
+
+A hard reload (Ctrl/Cmd+Shift+R) forces a real request and the page world works again.
+For cached loads the content world is the only thing that runs at all, which is why
+`@inject-into auto` is what ships: the page world when it can be had, the content world
+rather than nothing when it cannot.
+
+Firefox is generous in its content world in a way Chrome is not: `unsafeWindow` is a real
+handle on the page window and DOM nodes expose `.wrappedJSObject`, so the script reads
+author profiles straight off React's fibers on the rendered posts, and re-exports its
+`fetch` wrapper through `exportFunction`.
 In principle it keeps working, with profiles learned as posts render rather than as
-responses arrive. In practice this path has only been exercised against a stand-in, not a
-live timeline, which is why `page` is still what ships. To try it, set "Inject into" to
-`content` for the script in Violentmonkey and check `xpkbDiag()`.
+responses arrive. To try it, set "Inject into" to `content` for the script in
+Violentmonkey and check `xpkbDiag()`, or run under Tampermonkey.
+
+Two rules hold everywhere in the content world, and breaking either one takes x.com down
+rather than merely disabling this script. **Nothing content-world may be handed to page
+code**: not an `arguments` object (so `apply(this, arguments)` is banned at any page
+boundary - use `call` with named parameters), not an options object (clone it with
+`cloneInto` first), and not an unexported function. And **the page's global is
+`window.wrappedJSObject`, not `unsafeWindow`** - see 1.8.2 above. Both failures look the
+same from the page: `Permission denied to access property "length"`, thrown out of x.com's
+own `fetch` path, and the timeline never loads.
+
+Until 1.7.2 this path could break x.com outright. `toPage()` fell back to handing the
+page the raw content-world function whenever `exportFunction` refused, and page code that
+reads `.length` off one - which is what any library wrapping `fetch` does, to preserve
+arity - got `Permission denied to access property "length"` instead. The timeline then
+failed to load at all. A refused export now returns null and the caller declines to
+install, so the worst case is the network hook being absent rather than x.com being
+broken. The load banner reports `exportFunction FAILED` with the reason when that
+happens, and `network hook: none`.
 
 Open settings from the extension's toolbar menu ("Profile Keyword Blocker: settings"),
 or run `xpkbSettings()` in the console.
@@ -204,13 +236,13 @@ Run `xpkbDiag()`, or use the diagnostics menu command.
 | Symptom | Cause |
 | --- | --- |
 | `runs in page world: NO` | The script is in an isolated world and cannot see x.com traffic. In Violentmonkey set "Inject into" to `page`. |
-| `API payloads seen: 0` | The hook was installed too late. Hard-reload the tab. |
+| `API payloads seen: 0` while both hooks say `installed: yes` | The hook went onto an object the page does not read. Before 1.8.2 it was installed on `unsafeWindow`, which in Violentmonkey's content mode is a sandbox, not the page global - so it installed cleanly and never fired. Fixed by targeting `window.wrappedJSObject`. If you still see it, the hook was installed too late: hard-reload the tab. |
 | `profiles WITH a bio: 0 of N` | The bio is not where the extractor looks. The `raw User object shapes` section of the report shows where X actually put it. |
 | Posts still visible | `xpkbWhy()` prints a row per post on screen: handle, stored bio, display name, and verdict. |
 | A keyword that should obviously match, does not | `xpkbFind("that text")` ignores your keyword list and says which field the text is really in, and whether that field is searched. Most often it is the display name or the location, both off by default. |
 | `near misses: N profile(s) match in a field that is switched OFF` | Exactly that. `xpkbNearMisses()` lists them. Tick the field, or scope the keyword to it. |
 | A keyword matches when pasted from a profile but not when typed | Lookalike characters. Handled by default now; `xpkbExplain("handle")` shows the stored text with non-ASCII escaped so you can see exactly which character it is. |
-| Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Expected on Firefox, and handled: page-world injection needs the CSP worked around, which hangs off response headers a cached load never re-delivers. Since 1.5.0 the script runs in the content world instead and reads profiles off React's fibers. `xpkbDiag()` will say `JS world: xray`. To stop the warning entirely, open the script in Violentmonkey, Settings tab, and set "Inject into" to `content`: on Firefox that costs nothing but the pre-render head start. |
+| Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Page-world injection needs the CSP relaxed, which needs response headers a cached load never re-delivers. Since 1.8.0 the script asks for `auto` and runs in the content world instead of not running, so this is a warning rather than a failure. A hard reload gets the page world back. Tampermonkey is not a way around it. See [The page world](#the-page-world). |
 | `JS world: isolated` | Chrome + Violentmonkey with page-world injection refused, and Chrome's content world has no route to page data. Enable **Allow user scripts**, see [The page world](#the-page-world). |
 
 Accounts whose profile is unknown are never hidden. That is deliberate: a stub record
