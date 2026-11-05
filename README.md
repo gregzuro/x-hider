@@ -1,22 +1,10 @@
 # X Profile Keyword Blocker
 
 A userscript that hides posts on x.com from accounts whose **profile** matches your
-keywords. Not the post text - the author's bio, display name, location, link, or the
+keywords. It filters on the author's bio, display name, location, link, or the
 emoji they use.
 
-Works in Violentmonkey and Tampermonkey.
-
-## Why this is not trivial
-
-X does not put author bios in the timeline DOM, so no amount of reading the page will
-find them. This script hooks `fetch` and `XMLHttpRequest`, reads the profile objects
-that X's own GraphQL responses already carry for every post author, and builds a
-`screen_name -> profile` map. The map is what keyword matching runs against.
-
-Because the data arrives in the same response as the posts, matching happens before
-render, so hidden posts do not flash into view.
-
-Display names are additionally read straight off the page, since those are rendered.
+It is confirmed working in Violentmonkey and Tampermonkey.
 
 ## Install
 
@@ -27,17 +15,7 @@ Display names are additionally read straight off the page, since those are rende
 3. Reload x.com. A hard reload matters: the hook has to be in place before the first
    timeline request.
 
-### The page world
-
-x.com's CSP sends a `script-src` nonce, which makes the browser ignore the
-`'unsafe-inline'` sitting next to it in the same header. So nothing can drop a plain
-`<script>` into x.com's own JS world, and that world is where the network hook wants to
-be. Getting there is browser-specific and can fail.
-
-The script declares `@inject-into auto`: it asks for the page world and accepts the
-content world when the manager cannot get there. It works out which world it landed in
-and adapts. `xpkbDiag()` reports which one on the `JS world` line, and the line the script
-logs on load says so too.
+### Needs the 'page world'
 
 | World | When | What works |
 | --- | --- | --- |
@@ -63,38 +41,6 @@ Content-Security-Policy: The page's settings blocked an inline script (script-sr
 ```
 
 A hard reload (Ctrl/Cmd+Shift+R) forces a real request and the page world works again.
-For cached loads the content world is the only thing that runs at all, which is why
-`@inject-into auto` is what ships: the page world when it can be had, the content world
-rather than nothing when it cannot.
-
-Firefox is generous in its content world in a way Chrome is not: `unsafeWindow` is a real
-handle on the page window and DOM nodes expose `.wrappedJSObject`, so the script reads
-author profiles straight off React's fibers on the rendered posts, and re-exports its
-`fetch` wrapper through `exportFunction`.
-In principle it keeps working, with profiles learned as posts render rather than as
-responses arrive. To try it, set "Inject into" to `content` for the script in
-Violentmonkey and check `xpkbDiag()`, or run under Tampermonkey.
-
-Two rules hold everywhere in the content world, and breaking either one takes x.com down
-rather than merely disabling this script. **Nothing content-world may be handed to page
-code**: not an `arguments` object (so `apply(this, arguments)` is banned at any page
-boundary - use `call` with named parameters), not an options object (clone it with
-`cloneInto` first), and not an unexported function. And **the page's global is
-`window.wrappedJSObject`, not `unsafeWindow`** - see 1.8.2 above. Both failures look the
-same from the page: `Permission denied to access property "length"`, thrown out of x.com's
-own `fetch` path, and the timeline never loads.
-
-Until 1.7.2 this path could break x.com outright. `toPage()` fell back to handing the
-page the raw content-world function whenever `exportFunction` refused, and page code that
-reads `.length` off one - which is what any library wrapping `fetch` does, to preserve
-arity - got `Permission denied to access property "length"` instead. The timeline then
-failed to load at all. A refused export now returns null and the caller declines to
-install, so the worst case is the network hook being absent rather than x.com being
-broken. The load banner reports `exportFunction FAILED` with the reason when that
-happens, and `network hook: none`.
-
-Open settings from the extension's toolbar menu ("Profile Keyword Blocker: settings"),
-or run `xpkbSettings()` in the console.
 
 ## Keywords
 
@@ -107,26 +53,19 @@ One per line. Everything is case-insensitive by default.
 | `emoji:latin cross` | the same symbol, by name |
 | `:latin_cross:` | shortcode form of the same |
 | `U+271D` | by code point (`U+1F1FA U+1F1E6` for sequences) |
-| `flag:UA` | a country flag, from its ISO code |
+| `flag:MC` | a country flag, from its ISO code |
 | `emoji:cross` | a whole family: `✝ ✞ ✟ ✠ ☦ ☧ ☨ ☩` |
 | `#crypto` | `#crypto` and plain `crypto`, since the leading hash is optional |
 
-Emoji group names: `cross`, `christian`, `religion`, `crypto`, `pride`.
+Emoji group names: `cross`, `christian`, `religion`, `crypto`.
 `xpkbEmojiNames()` lists every name.
 
 ### Hashtags
 
 Bios are written both ways, `Christian` and `#Christian`, and you get both either way.
 
-A bare keyword already finds the hashtag: `#` is not a word character, so neither
-substring nor word matching is bothered by it. The reverse needed help, so a **leading
-`#` on a keyword is treated as optional** - `#crypto` finds `#crypto` and plain `crypto`
-alike. Paste a keyword straight out of someone's bio, hash and all, and it behaves the
-way you would expect.
-
 Word mode still refuses a substring, so `#Christian` does not match `unChristian`. Regex
-mode is you being explicit and leaves `#` exactly as written, which is where to go if you
-want the hashtag form and nothing else.
+mode lets you be explicit and matches `#` exactly as written.
 
 If a keyword you expect to hit a hashtag is not hitting it, the matcher is usually not
 the reason. Run `xpkbFind("christian")`: it ignores your keyword list and reports which
@@ -146,9 +85,7 @@ decorative and some of it deliberate evasion:
 | `Israel` | `𝐈𝐬𝐫𝐚𝐞𝐥` in mathematical bold, one of dozens of styled runs |
 | `Israel` | `Ｉｓｒａｅｌ` in fullwidth Latin |
 
-Every one of those makes a keyword typed by hand miss text that the same word **pasted out
-of the profile** matches, which reads as the matcher being broken. All of them are folded
-away now, on your keyword and on the profile alike, so the two sides meet in the middle.
+Any of these will match all of these.
 Zero-width characters are dropped, styled and fullwidth Latin and accents are normalised,
 and Cyrillic and Greek lookalikes are mapped to their Latin twins.
 
@@ -156,24 +93,22 @@ Untick "Match lookalike characters" in settings to turn it off.
 
 ### When a keyword does not fire
 
-Out of the box only the **bio** is searched, and that is the single most common reason a
-correct keyword never matches. A country name usually lives in `location`. A cause, a
-slogan or a flag usually lives in the display name. Neither field is on by default, so
-the text is really there and nothing is looking at it.
+Out of the box only the **bio** is searched. 
+You can enable location and or display name to expand the search to those areas. 
 
-The script now says so rather than sitting quiet. If any known profile matches a keyword
-in a field that is switched off, it warns in the console after 15 seconds, names the
-field and the profile, and `xpkbDiag()` carries a `near misses` line with the list.
-`xpkbNearMisses()` prints the lot on demand, and `xpkbFind("israel")` answers the same
-question from the other end: where does this text actually live?
+If any known profile matches a keyword
+in a field that is switched off, it warns in the console after 15 seconds and names the
+field and the profile. `xpkbDiag()` has a `near misses` line with the list.
+`xpkbNearMisses()` prints the lot on demand, and `xpkbFind("israel")` tells where 
+the text was found.
 
 When you want the whole decision for one account, **`xpkbExplain("DeniseInCanada")`**
 prints what is stored in every field with non-ASCII shown as `\uXXXX`, which fields are
 searched, every compiled keyword regex, and for each keyword-and-field pair whether it was
 tested and whether it hit.
 
-The fix is either to tick the field in settings, which widens every unscoped keyword, or
-to scope that one keyword and leave the rest alone:
+You can either tick the field in settings, which widens every unscoped keyword, or 
+scope that one keyword and leave the rest alone:
 
 ```
 location:Israel      # only their location, other keywords unaffected
@@ -195,7 +130,7 @@ any:web3             # every field, regardless of checkboxes
 
 Prefixes: `bio:` `name:` `handle:` `location:` `link:` `professional:` `any:`
 
-This matters when mixing text and emoji rules. Ticking the global "Display name" box
+This helps when mixing text and emoji rules. Ticking the global "Display name" box
 would make a keyword like `Christian` start hiding everyone *named* Christian;
 scoping keeps each rule where it belongs.
 
@@ -245,9 +180,7 @@ Run `xpkbDiag()`, or use the diagnostics menu command.
 | Violentmonkey says "could not inject some scripts" on a soft reload or a reopened tab | Page-world injection needs the CSP relaxed, which needs response headers a cached load never re-delivers. Since 1.8.0 the script asks for `auto` and runs in the content world instead of not running, so this is a warning rather than a failure. A hard reload gets the page world back. Tampermonkey is not a way around it. See [The page world](#the-page-world). |
 | `JS world: isolated` | Chrome + Violentmonkey with page-world injection refused, and Chrome's content world has no route to page data. Enable **Allow user scripts**, see [The page world](#the-page-world). |
 
-Accounts whose profile is unknown are never hidden. That is deliberate: a stub record
-must not silently whitelist an account, so a profile with no usable text counts as
-unknown rather than clean.
+Accounts whose profile is unknown are never hidden. 
 
 ## Updating
 
